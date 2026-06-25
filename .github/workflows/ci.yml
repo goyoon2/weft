@@ -16,7 +16,7 @@ jobs:
       - uses: pnpm/action-setup@v4 # reads packageManager from package.json
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24 # build.ts uses node:fs.globSync (Node 22+); 20 lacks it
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
