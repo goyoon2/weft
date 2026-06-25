@@ -70,7 +70,9 @@ export function pickHighestTag(tags: string[], opts?: { tagPattern?: string }): 
 /** Resolve `owner/repo` for the GitHub strategies from the source, an explicit hint, or the homepage. */
 function githubRepoOf(pattern: HarnessPattern, lc: LivecheckSpec | undefined): string {
   if (pattern.source.type === "github-release") return pattern.source.repo;
-  const hint = lc?.repoUrl ?? pattern.homepage;
+  // For a git source the source URL is the repo itself — prefer it over homepage; `repoUrl` still wins.
+  const gitUrl = pattern.source.type === "git" ? pattern.source.url : undefined;
+  const hint = lc?.repoUrl ?? gitUrl ?? pattern.homepage;
   const fromUrl = hint?.match(/github\.com[:/]+([^/]+\/[^/#?.]+)/);
   if (fromUrl?.[1]) return fromUrl[1];
   if (hint && /^[^/\s]+\/[^/\s]+$/.test(hint)) return hint;
@@ -134,6 +136,20 @@ async function resolveGithubTags(repo: string, tagPattern?: string): Promise<{ v
   return { version, via: `github tags (${tags.length})` };
 }
 
+/**
+ * Read a version file from a repo over a raw GitHub URL — a single cheap GET, no clone. The trimmed
+ * file contents ARE the version (verbatim, not semver-coerced) so they compare equal to a build that
+ * read the same file via `delegate.versionFile`. For tagless branch-tracked repos (e.g. gstack).
+ */
+async function resolveVersionFile(repo: string, ref: string, file: string): Promise<{ version: string; via: string }> {
+  const url = `https://raw.githubusercontent.com/${repo}/${ref}/${file.replace(/^\/+/, "")}`;
+  const res = await fetch(url, { headers: { "User-Agent": "weft-livecheck" } });
+  if (!res.ok) throw new Error(`version file ${url} → ${res.status} ${res.statusText}`);
+  const version = (await res.text()).trim();
+  if (!version) throw new Error(`version file ${file} @ ${ref} is empty`);
+  return { version, via: `${file} @ ${ref}` };
+}
+
 // ───────────────────────────── public entrypoint ─────────────────────────────
 
 /**
@@ -168,6 +184,13 @@ export async function resolveUpstreamVersion(pattern: HarnessPattern): Promise<U
     }
     case "github-tags": {
       const { version, via } = await resolveGithubTags(githubRepoOf(pattern, lc), lc?.tagPattern);
+      return { version, strategy, via };
+    }
+    case "version-file": {
+      if (!lc?.versionFile) throw new Error("version-file strategy needs livecheck.versionFile");
+      // Read the same ref the build uses, so livecheck and build agree on the version string.
+      const ref = pattern.source.type === "git" ? (pattern.source.ref ?? "main") : "main";
+      const { version, via } = await resolveVersionFile(githubRepoOf(pattern, lc), ref, lc.versionFile);
       return { version, strategy, via };
     }
   }

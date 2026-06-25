@@ -70,7 +70,9 @@ function weft(home: string, args: string[]): { out: string; code: number } {
 describe("weft CLI e2e (subprocess)", () => {
   it("update → install → list → uninstall leaves no trace", () => {
     const home = tmp("weft-e2e-home-");
-    expect(weft(home, ["update"]).out).toContain("catalog updated");
+    // First pull has no cache to diff against; a second identical pull reports no changes.
+    expect(weft(home, ["update"]).out).toContain("Catalog fetched");
+    expect(weft(home, ["update"]).out).toContain("nothing changed");
 
     const ins = weft(home, ["install", "gsd-core", "--cli", "claude-code", "--scope", "global", "--yes"]);
     expect(ins.code).toBe(0);

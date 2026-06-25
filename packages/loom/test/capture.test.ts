@@ -120,3 +120,52 @@ describe("loom capture XDG isolation", () => {
     expect(readFileSync(join(xdgStaging, "payloads/fake-xdg", "conf"), "utf8")).toBe("ok\n");
   });
 });
+
+// Regression: an installer that records absolute *source* paths in a self-describing receipt (e.g.
+// ECC's ecc-install-state.json `operations[].sourcePath`) bakes a path under the build sandbox that is
+// NOT the config dir — the npx unpack of the upstream package. configReal/configRaw rewrites miss it,
+// so it used to leak the sandbox root. The capture must re-localize the bare sandbox root too, but only
+// AFTER the longer config path, so a destination path under the config dir is still mapped correctly.
+describe("loom capture sandbox source-path re-localization", () => {
+  const recScript = join(scriptDir, "fake-receipt-install.sh");
+  writeFileSync(
+    recScript,
+    [
+      "#!/bin/sh",
+      "set -e",
+      'mkdir -p "$HOME/.claude"',
+      // $HOME == the sandbox: a receipt whose dest is under the config dir but whose source is the
+      // sandbox-rooted unpack dir (outside the config dir) — the exact ECC shape.
+      'printf \'{"sourcePath":"%s/.npm/_npx/h/node_modules/pkg/x.md","destinationPath":"%s/.claude/x.md"}\\n\' "$HOME" "$HOME" > "$HOME/.claude/receipt.json"',
+      'printf "x\\n" > "$HOME/.claude/x.md"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(recScript, 0o755);
+
+  const recStaging = mkdtempSync(join(tmpdir(), "weft-capture-receipt-staging-"));
+  const builtRec = buildCapturedSpoolForTarget({
+    harnessId: "fake-rec",
+    pkg: "fake-pkg",
+    capture: { installCmd: `sh ${recScript}`, configDir: ".claude" },
+    cli: "claude-code",
+    scope: "global",
+    version: "0.0.0",
+    stagingDir: recStaging,
+  });
+  const recFile = readFileSync(join(recStaging, "payloads/fake-rec", "receipt.json"), "utf8");
+
+  afterAll(() => rmSync(recStaging, { recursive: true, force: true }));
+
+  it("re-localizes a sandbox-rooted source path to the payload placeholder", () => {
+    // source (outside the config dir) → placeholder + full sandbox tail; dest (inside the config dir)
+    // → the longer configReal rule wins, collapsing `.claude/` into the placeholder. Both portable.
+    expect(recFile).toBe(
+      '{"sourcePath":"{{WEFT_PAYLOAD_DIR}}/.npm/_npx/h/node_modules/pkg/x.md","destinationPath":"{{WEFT_PAYLOAD_DIR}}/x.md"}\n',
+    );
+  });
+
+  it("does not flag the re-localized receipt as a leak", () => {
+    expect(builtRec.notes.find((n) => n.includes("LEAK"))).toBeUndefined();
+  });
+});
