@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Add or fix a harness in the catalog
+    url: https://github.com/goyoon2/weft-mill/issues/new/choose
+    about: Onboarding a repo, or a specific harness installing wrong / a stale version, is a catalog issue — file it on weft-mill, not here.
+  - name: Security issue
+    url: https://github.com/goyoon2/weft/security/advisories/new
+    about: A path-traversal / sandbox-escape / untrusted-input concern — report it privately, don't open a public issue.
