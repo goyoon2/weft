@@ -13,6 +13,7 @@ import {
   searchOp,
   uninstallHarness,
   updateIndex,
+  upgradeAll,
   upgradeHarness,
 } from "../src/index";
 import type { WeftEnv } from "../src/index";
@@ -223,5 +224,39 @@ describe("upgrade applies a version delta", () => {
     // uninstall after upgrade is still clean
     await uninstallHarness(env, { harness: "gsd-core", cli: "claude-code", scope: "global" });
     expect(existsSync(claude)).toBe(false);
+  });
+
+  it("upgradeAll upgrades local installs in EVERY project, each in its own folder", async () => {
+    const v2src = tmp("weft-v2src-all-");
+    cpSync(gsdFixtureDir, v2src, { recursive: true });
+    writeFileSync(join(v2src, "package.json"), JSON.stringify({ name: "@opengsd/gsd-core", version: "1.6.0" }));
+    writeFileSync(join(v2src, "agents", "gsd-tester.md"), "---\nname: gsd-tester\n---\nTester.\n");
+
+    const mill = tmp("weft-mill-all-");
+    const v1 = await buildHarness(gsdPattern, { outDir: mill, sourceDir: gsdFixtureDir, version: "1.5.0" });
+    const v2 = await buildHarness(gsdPattern, { outDir: mill, sourceDir: v2src, version: "1.6.0" });
+    const idx = writeIndex(mill, [versionRef(v1.spools, "1.5.0"), versionRef(v2.spools, "1.6.0")], "1.6.0");
+
+    const home = tmp("weft-home-all-");
+    const projA = tmp("weft-projA-");
+    const projB = tmp("weft-projB-");
+    const envA = makeEnv(home, projA, idx);
+    const envB = makeEnv(home, projB, idx);
+
+    // Install 1.5.0 locally in two SEPARATE project folders.
+    await installHarness(envA, { harness: "gsd-core", cli: "claude-code", scope: "local", version: "1.5.0" });
+    await installHarness(envB, { harness: "gsd-core", cli: "claude-code", scope: "local", version: "1.5.0" });
+    expect(existsSync(join(projB, ".claude", "agents", "gsd-tester.md"))).toBe(false);
+
+    // Run upgradeAll from projA's cwd — it must upgrade BOTH projects, writing into each one's dir.
+    const { outcomes } = await upgradeAll(envA, { harness: "gsd-core" });
+    expect(outcomes.filter((o) => o.status === "upgraded")).toHaveLength(2);
+    expect(existsSync(join(projA, ".claude", "agents", "gsd-tester.md"))).toBe(true);
+    expect(existsSync(join(projB, ".claude", "agents", "gsd-tester.md"))).toBe(true); // other folder upgraded in place
+    expect(listInstalled(envB)[0]?.version).toBe("1.6.0");
+
+    // Idempotent: a second pass finds everything already current.
+    const again = await upgradeAll(envA, { harness: "gsd-core" });
+    expect(again.outcomes.every((o) => o.status === "up-to-date")).toBe(true);
   });
 });

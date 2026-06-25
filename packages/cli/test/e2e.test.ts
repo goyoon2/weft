@@ -84,6 +84,11 @@ describe("weft CLI e2e (subprocess)", () => {
 
     expect(weft(home, ["list"]).out).toContain("gsd-core");
 
+    // catalog lists every available harness and marks this one installed
+    const cat = weft(home, ["catalog"]);
+    expect(cat.out).toContain("gsd-core");
+    expect(cat.out).toContain("installed");
+
     const un = weft(home, ["uninstall", "gsd-core", "--cli", "claude-code", "--scope", "global"]);
     expect(un.out).toContain("uninstalled");
     expect(existsSync(claude)).toBe(false);

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseIndex } from "@weft/schema";
+import { absolutizeIndexSpools, parseIndex } from "@weft/schema";
 import type { Index } from "@weft/schema";
 import { stateDirs } from "./paths";
 import type { WeftEnv } from "./paths";
@@ -33,10 +33,14 @@ export function pullIndex(env: WeftEnv): Index {
     );
   }
   const text = readFileSync(localPath, "utf8");
-  const index = parseIndex(JSON.parse(text)); // validate before caching
+  // The committed catalog stores spool urls RELATIVE to the mill dir (portable across machines).
+  // Resolve them to absolute `file://` against this checkout, then cache the absolutized form so
+  // `loadCachedIndex` / `fetchSpool` see ready-to-use local urls without knowing the mill location.
+  const millDir = dirname(localPath);
+  const index = absolutizeIndexSpools(parseIndex(JSON.parse(text)), millDir); // validate + localize
   const cachePath = stateDirs(env).indexCache;
   mkdirSync(dirname(cachePath), { recursive: true });
-  writeFileSync(cachePath, text);
+  writeFileSync(cachePath, `${JSON.stringify(index, null, 2)}\n`);
   return index;
 }
 

@@ -77,6 +77,22 @@ describe("validate", () => {
     ).toThrow();
   });
 
+  it("accepts an optional livecheck override block", () => {
+    const p = parsePattern({
+      ...validPattern,
+      livecheck: { strategy: "github-tags", tagPattern: "v*" },
+    });
+    expect(p.livecheck?.strategy).toBe("github-tags");
+  });
+
+  it("requires a reason when livecheck opts out (the no_autobump! rule)", () => {
+    expect(() => parsePattern({ ...validPattern, livecheck: { skip: true } })).toThrow();
+    expect(
+      parsePattern({ ...validPattern, livecheck: { skip: true, skipReason: "no upstream releases" } })
+        .livecheck?.skipReason,
+    ).toBe("no upstream releases");
+  });
+
   it("round-trips a minimal spool", () => {
     const spool: Spool = {
       schema: 1,

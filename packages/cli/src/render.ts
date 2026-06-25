@@ -1,5 +1,5 @@
 import type { Receipt } from "@weft/schema";
-import type { ExecutionPlan, SearchHit } from "@weft/core";
+import type { CatalogItem, ExecutionPlan, SearchHit } from "@weft/core";
 
 const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -11,6 +11,18 @@ export function renderSearch(hits: SearchHit[]): string {
   if (hits.length === 0) return "No matching harnesses.";
   return hits
     .map((h) => `  ${h.entry.id}  ·  ${h.entry.displayName} — ${truncate(h.entry.description, 64)}  [${h.entry.clis.join(", ")}]  v${h.entry.latest}`)
+    .join("\n");
+}
+
+export function renderCatalog(items: CatalogItem[]): string {
+  if (items.length === 0) return "Catalog is empty — run `weft update`.";
+  return items
+    .map((it) => {
+      const e = it.entry;
+      const mark = it.installs.length ? "●" : "○";
+      const inst = it.installs.length ? `  (installed ×${it.installs.length})` : "";
+      return `  ${mark} ${e.id}  ·  ${truncate(e.description, 60)}  [${e.clis.join(", ")}]  v${e.latest}${inst}`;
+    })
     .join("\n");
 }
 

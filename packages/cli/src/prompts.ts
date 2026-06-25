@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import type { CellState } from "@weft/core";
-import type { CliId, Scope } from "@weft/schema";
+import type { CliId, Receipt, Scope } from "@weft/schema";
 
 export interface InstallTarget {
   cli: CliId;
@@ -49,4 +49,26 @@ export async function promptInstallTargets(harness: string, cells: CellState[]):
     }
   }
   return targets;
+}
+
+const targetKey = (r: { cli: CliId; scope: Scope }): string => `${r.cli}/${r.scope}`;
+
+/**
+ * When an uninstall matches several installs in the current context, let the user multi-select
+ * which (cli, scope) install(s) to remove — the symmetric counterpart to the install prompt.
+ * (cli, scope) is unique among the candidates, so it doubles as the option key. Returns null on
+ * cancel; an empty array if nothing was picked.
+ */
+export async function promptUninstallTargets(harness: string, candidates: Receipt[]): Promise<InstallTarget[] | null> {
+  const choice = await p.multiselect<string>({
+    message: `Uninstall ${harness} from which install(s)?`,
+    options: candidates.map((r) => ({
+      value: targetKey(r),
+      label: `${r.cli} / ${r.scope}`,
+      hint: r.scope === "global" ? "all projects" : (r.projectPath ?? "this project"),
+    })),
+    required: true,
+  });
+  if (p.isCancel(choice)) return null;
+  return candidates.filter((r) => choice.includes(targetKey(r))).map((r) => ({ cli: r.cli, scope: r.scope }));
 }

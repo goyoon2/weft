@@ -1,6 +1,7 @@
 export * from "./types";
 export * from "./hash";
 export * from "./placeholder";
+export * from "./spool-url";
 export * from "./validate";
 
 /** The schema version every artifact in this model carries. */

@@ -6,15 +6,16 @@ import {
   infoHarness,
   installHarness,
   installMatrix,
+  listCatalog,
   listInstalled,
   searchOp,
   uninstallHarness,
   updateIndex,
-  upgradeHarness,
+  upgradeAll,
 } from "@weft/core";
-import type { InstallResult } from "@weft/core";
-import { promptInstallTargets } from "./prompts";
-import { renderInfo, renderList, renderPlan, renderSearch } from "./render";
+import type { InstallResult, UninstallResult } from "@weft/core";
+import { promptInstallTargets, promptUninstallTargets } from "./prompts";
+import { renderCatalog, renderInfo, renderList, renderPlan, renderSearch } from "./render";
 
 const VERSION = "0.1.0";
 
@@ -45,6 +46,13 @@ function reportInstall(harness: string, t: { cli: CliId; scope: Scope }, res: In
   }
 }
 
+function reportUninstall(harness: string, res: UninstallResult): void {
+  if (res.status === "uninstalled") {
+    console.log(`✓ uninstalled ${harness} (${res.receipt.cli}/${res.receipt.scope})`);
+    if (res.conflicts.length) console.log(`  left ${res.conflicts.length} modified item(s) in place`);
+  }
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
@@ -72,6 +80,27 @@ export function buildProgram(): Command {
       const { entry, installed } = infoHarness(env, harness);
       if (opts.json) console.log(JSON.stringify({ entry, installed }, null, 2));
       else console.log(renderInfo(entry, installed, env.home));
+    });
+
+  program
+    .command("catalog")
+    .alias("available")
+    .description("list every harness available in the mill")
+    .option("--json", "output JSON")
+    .action((opts: { json?: boolean }) => {
+      const env = defaultEnv({ weftVersion: VERSION });
+      const items = listCatalog(env);
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            items.map((i) => ({ ...i.entry, installs: i.installs.length })),
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(renderCatalog(items));
+      }
     });
 
   program
@@ -163,11 +192,21 @@ export function buildProgram(): Command {
         scope: opts.scope as Scope | undefined,
       });
       if (res.status === "uninstalled") {
-        console.log(`✓ uninstalled ${harness} (${res.receipt.cli}/${res.receipt.scope})`);
-        if (res.conflicts.length) console.log(`  left ${res.conflicts.length} modified item(s) in place`);
+        reportUninstall(harness, res);
       } else if (res.status === "not-installed") {
         console.log(`${harness} is not installed here.`);
         for (const r of res.elsewhere) console.log(`  · also at ${r.cli}/${r.scope}${locationLabel(r)}`);
+      } else if (process.stdin.isTTY) {
+        // Multiple installs and an interactive terminal: let the user pick which to remove,
+        // mirroring the install prompt. (--cli/--scope still narrows non-interactively.)
+        const chosen = await promptUninstallTargets(harness, res.candidates);
+        if (chosen === null || chosen.length === 0) {
+          console.log("cancelled.");
+          return;
+        }
+        for (const t of chosen) {
+          reportUninstall(harness, await uninstallHarness(env, { harness, cli: t.cli, scope: t.scope }));
+        }
       } else {
         console.log(`${harness} is installed in multiple places — narrow with --cli/--scope:`);
         for (const r of res.candidates) console.log(`  · ${r.cli}/${r.scope}${locationLabel(r)}`);
@@ -177,29 +216,39 @@ export function buildProgram(): Command {
 
   program
     .command("upgrade <harness>")
-    .description("upgrade an installed harness to the latest version")
-    .option("--cli <id>", "target CLI")
-    .option("--scope <scope>", "global or local")
+    .description("upgrade every install of a harness to the latest version (all projects)")
+    .option("--cli <id>", "only this CLI")
+    .option("--scope <scope>", "only global or local")
     .action(async (harness: string, opts: { cli?: string; scope?: string }) => {
       if (opts.cli) assertCli(opts.cli);
       if (opts.scope) assertScope(opts.scope);
       const env = defaultEnv({ weftVersion: VERSION });
-      const res = await upgradeHarness(env, {
+      const { outcomes } = await upgradeAll(env, {
         harness,
         cli: opts.cli as CliId | undefined,
         scope: opts.scope as Scope | undefined,
       });
-      if (res.status === "upgraded") {
-        console.log(`✓ upgraded ${harness} ${res.from} → ${res.to} (${res.receipt.cli}/${res.receipt.scope})`);
-        if (res.conflicts.length) console.log(`  kept ${res.conflicts.length} item(s) you had modified`);
-      } else if (res.status === "up-to-date") {
-        console.log(`${harness} is already at the latest version (${res.version}).`);
-      } else if (res.status === "not-installed") {
-        console.log(`${harness} is not installed here.`);
-      } else {
-        console.log(`${harness} is installed in multiple places — narrow with --cli/--scope:`);
-        for (const r of res.candidates) console.log(`  · ${r.cli}/${r.scope}${locationLabel(r)}`);
-        process.exitCode = 1;
+      if (outcomes.length === 0) {
+        console.log(`${harness} is not installed anywhere.`);
+        return;
+      }
+      let upgraded = 0;
+      let current = 0;
+      for (const o of outcomes) {
+        const loc = `${o.receipt.cli}/${o.receipt.scope}${locationLabel(o.receipt)}`;
+        if (o.status === "upgraded") {
+          upgraded++;
+          console.log(`✓ upgraded ${harness} ${o.from} → ${o.to} (${loc})`);
+          if (o.conflicts.length) console.log(`  kept ${o.conflicts.length} item(s) you had modified`);
+        } else if (o.status === "up-to-date") {
+          current++;
+          console.log(`• already latest ${o.version} (${loc})`);
+        } else {
+          console.log(`– skipped ${loc}: ${o.reason}`);
+        }
+      }
+      if (outcomes.length > 1) {
+        console.log(`\n${upgraded} upgraded, ${current} already current${outcomes.length - upgraded - current ? `, ${outcomes.length - upgraded - current} skipped` : ""}.`);
       }
     });
 
