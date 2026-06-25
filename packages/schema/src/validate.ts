@@ -37,32 +37,58 @@ const livecheckSpec = z
   .object({
     skip: z.boolean().optional(),
     skipReason: z.string().min(1).optional(),
-    strategy: z.enum(["npm-dist-tag", "git-tags", "github-latest", "github-tags"]).optional(),
+    strategy: z.enum(["npm-dist-tag", "git-tags", "github-latest", "github-tags", "version-file"]).optional(),
     distTag: z.string().min(1).optional(),
     tagPattern: z.string().min(1).optional(),
     repoUrl: z.string().min(1).optional(),
+    versionFile: z.string().min(1).optional(),
   })
   // The `no_autobump!` rule: opting out must say why.
   .refine((v) => !v.skip || !!v.skipReason, {
     message: "livecheck.skip requires livecheck.skipReason",
     path: ["skipReason"],
+  })
+  // version-file is the one strategy that needs an extra field (which file to read).
+  .refine((v) => v.strategy !== "version-file" || !!v.versionFile, {
+    message: "livecheck.strategy 'version-file' requires livecheck.versionFile",
+    path: ["versionFile"],
   });
 
-const targetBuildSpec = z.object({
-  strategy: z.enum(["declarative", "captured"]),
-  map: z.array(slotMapRule).optional(),
-  capture: z
-    .object({
-      installCmd: z.string().min(1),
-      configDir: z.union([
-        z.string().min(1),
-        z.object({ global: z.string().min(1), local: z.string().min(1) }),
-      ]),
-      normalize: z.array(z.object({ from: z.string(), to: z.string() })).optional(),
-    })
-    .optional(),
-  transforms: z.array(transformRule).optional(),
-});
+const delegateSpec = z
+  .object({
+    installCmd: z.string().min(1),
+    uninstallCmd: z.string().min(1),
+    upgradeCmd: z.string().min(1).optional(),
+    dir: z
+      .object({ global: z.string().min(1).optional(), local: z.string().min(1).optional() })
+      .refine((d) => !!d.global || !!d.local, { message: "delegate.dir needs at least one of global/local" }),
+    requires: z.array(z.string().min(1)).optional(),
+    summary: z.string().min(1).optional(),
+    versionFile: z.string().min(1).optional(),
+  });
+
+const targetBuildSpec = z
+  .object({
+    strategy: z.enum(["declarative", "captured", "delegated"]),
+    map: z.array(slotMapRule).optional(),
+    capture: z
+      .object({
+        installCmd: z.string().min(1),
+        configDir: z.union([
+          z.string().min(1),
+          z.object({ global: z.string().min(1), local: z.string().min(1) }),
+        ]),
+        normalize: z.array(z.object({ from: z.string(), to: z.string() })).optional(),
+      })
+      .optional(),
+    delegate: delegateSpec.optional(),
+    transforms: z.array(transformRule).optional(),
+  })
+  // A delegated target must carry its recipe; declarative/captured must not.
+  .refine((t) => t.strategy !== "delegated" || !!t.delegate, {
+    message: "delegated strategy requires a delegate block",
+    path: ["delegate"],
+  });
 
 const patternSchema = z.object({
   schema: z.literal(1),
@@ -159,6 +185,18 @@ const spoolSchema = z.object({
     }),
   ),
   placeholders: z.array(z.string()),
+  delegate: z
+    .object({
+      installCmd: z.string(),
+      uninstallCmd: z.string(),
+      upgradeCmd: z.string().optional(),
+      dir: z.string(),
+      requires: z.array(z.string()),
+      summary: z.string().optional(),
+      ref: z.string(),
+      version: z.string(),
+    })
+    .optional(),
   archiveSha: sha256,
 });
 
@@ -203,6 +241,15 @@ const receiptSchema = z.object({
     }),
   ),
   resolvedPlaceholders: z.record(z.string(), z.string()),
+  delegation: z
+    .object({
+      installCmd: z.string(),
+      uninstallCmd: z.string(),
+      dir: z.string(),
+      exitCode: z.number(),
+      ranAt: z.string(),
+    })
+    .optional(),
   notes: z.array(z.string()).optional(),
 });
 

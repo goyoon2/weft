@@ -88,6 +88,49 @@ describe("update + search", () => {
   });
 });
 
+describe("update diff", () => {
+  it("reports first run, then added / updated / removed / unchanged across pulls", async () => {
+    const mill = tmp("weft-mill-diff-");
+    const indexPath = join(mill, "index.json");
+    const env = makeEnv(tmp("weft-home-diff-"), tmp("weft-cwd-diff-"), pathToFileURL(indexPath).href);
+
+    const entry = (id: string, latest: string, clis: ("claude-code")[] = ["claude-code"]) => ({
+      id,
+      displayName: id,
+      description: `${id} desc`,
+      keywords: [],
+      latest,
+      clis,
+      versions: [{ version: latest, spools: [] }],
+    });
+    const writeMill = (entries: ReturnType<typeof entry>[]): void =>
+      writeFileSync(indexPath, JSON.stringify({ schema: 1, entries }, null, 2));
+
+    // First pull: no cache yet, so it's a first run (nothing to diff against).
+    writeMill([entry("alpha", "1.0.0"), entry("beta", "1.0.0")]);
+    const first = await updateIndex(env);
+    expect(first.entries).toBe(2);
+    expect(first.diff.firstRun).toBe(true);
+    expect(first.diff.added).toEqual([]);
+
+    // Second pull: alpha bumped, gamma added, beta removed.
+    writeMill([entry("alpha", "1.1.0"), entry("gamma", "2.0.0")]);
+    const second = (await updateIndex(env)).diff;
+    expect(second.firstRun).toBe(false);
+    expect(second.updated).toEqual([{ id: "alpha", displayName: "alpha", from: "1.0.0", to: "1.1.0" }]);
+    expect(second.added.map((e) => e.id)).toEqual(["gamma"]);
+    expect(second.removed.map((e) => e.id)).toEqual(["beta"]);
+    expect(second.unchanged).toBe(0);
+
+    // Third pull: identical catalog — everything is unchanged, nothing reported.
+    const third = (await updateIndex(env)).diff;
+    expect(third.added).toEqual([]);
+    expect(third.updated).toEqual([]);
+    expect(third.removed).toEqual([]);
+    expect(third.unchanged).toBe(2);
+  });
+});
+
 describe("remote (http) catalog", () => {
   it("updates from a hosted index and installs by downloading + hash-verifying spools", async () => {
     // A committed-style catalog served over http: index.json with RELATIVE spool urls, spools

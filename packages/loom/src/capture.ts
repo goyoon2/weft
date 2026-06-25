@@ -135,10 +135,20 @@ export function buildCapturedSpoolForTarget(args: {
     /* no `node` on PATH — process.execPath still covers us */
   }
 
-  // Longest-first so the config path is consumed before the bare sandbox root it sits under.
+  // The whole sandbox (cwd == HOME == every XDG base) is the throwaway build root: the only things
+  // under it are the captured config dir AND build-time noise — the npx unpack of the upstream package
+  // (`<sandbox>/.npm/_npx/<hash>/node_modules/<pkg>`), the temp HOME, etc. An installer that records
+  // absolute *source* paths in a self-describing receipt (e.g. ECC's `ecc-install-state.json`, whose
+  // `operations[].sourcePath` points at the unpack dir) bakes a sandbox-rooted path that ISN'T the
+  // config dir, so the configReal/configRaw rewrites miss it and it leaks. Re-localize the bare sandbox
+  // root too — it has no meaning to the installed user, and like configReal it collapses to the payload
+  // dir. Listed AFTER configReal/configRaw and sorted longest-first, so a destination path under the
+  // config dir is still consumed by the (longer) configReal rule before this shorter root rule sees it.
   const pathRewrites: { from: string; to: string }[] = [
     { from: configReal, to: PAYLOAD_PLACEHOLDER },
     { from: configRaw, to: PAYLOAD_PLACEHOLDER },
+    { from: sandboxReal, to: PAYLOAD_PLACEHOLDER },
+    { from: sandbox, to: PAYLOAD_PLACEHOLDER },
     ...[...nodePaths].map((from) => ({ from, to: "node" })),
     ...(capture.normalize ?? []),
   ].sort((a, b) => b.from.length - a.from.length);

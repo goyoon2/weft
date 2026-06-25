@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sha256OfBytes, sha256OfFile, sha256OfValue, substitutePlaceholders } from "@weft/schema";
 import type {
@@ -130,6 +131,140 @@ function pruneEmptyDirs(dirs: Iterable<string>, env: WeftEnv): void {
 
 const receiptPath = (env: WeftEnv, id: string): string => join(stateDirs(env).receipts, `${id}.json`);
 
+// ───────────────────────────── delegated (cask) ─────────────────────────────
+
+/** Is `bin` resolvable on PATH? Used to fail a delegated install early with a clear message. */
+function hasOnPath(bin: string): boolean {
+  try {
+    execSync(process.platform === "win32" ? `where ${bin}` : `command -v ${bin}`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run an upstream installer/uninstaller command on the USER'S machine (stdout/stderr streamed so the
+ * user watches it). This is the deliberate, consent-gated exception to weft's "no code execution"
+ * rule — only reached for `delegated` spools whose consent the caller already obtained. Returns the
+ * process exit code (never throws on a non-zero exit).
+ *
+ * The child runs in (and sees `HOME` =) `env.home`, the same value weft resolved the recipe's
+ * `{home}`/`{dir}` tokens against — so the install always lands where the plan said it would, even
+ * under a `WEFT_HOME_OVERRIDE`. In normal use `env.home` is the real home, so nothing changes.
+ */
+function runShell(cmd: string, env: WeftEnv): number {
+  try {
+    execSync(cmd, { stdio: "inherit", cwd: env.home, env: { ...process.env, HOME: env.home } });
+    return 0;
+  } catch (err) {
+    const code = (err as { status?: number }).status;
+    return typeof code === "number" ? code : 1;
+  }
+}
+
+/**
+ * Apply a `delegated` install: verify required tools, run the upstream installer on the user's
+ * machine, and record a receipt carrying the uninstall command (so removal delegates cleanly).
+ *
+ * Consent is the CALLER's responsibility — this only runs once the user has agreed (`--trust` or an
+ * interactive y/N). There is no transaction: weft cannot roll back what the upstream installer did to
+ * the host, so on a non-zero exit we record nothing and surface the failure.
+ */
+export async function installDelegated(env: WeftEnv, plan: ExecutionPlan): Promise<ApplyResult> {
+  const d = plan.delegate;
+  if (!d) throw new Error("weft: installDelegated called without a delegated plan");
+
+  const missing = d.requires.filter((bin) => !hasOnPath(bin));
+  if (missing.length) {
+    throw new Error(
+      `weft: ${plan.harness} needs ${missing.join(", ")} on PATH for its installer — install ${missing.length > 1 ? "them" : "it"} and retry.`,
+    );
+  }
+
+  const exitCode = runShell(d.installCmd, env);
+  if (exitCode !== 0) {
+    throw new Error(`weft: the ${plan.harness} installer exited with code ${exitCode}; nothing was recorded.`);
+  }
+
+  const now = new Date().toISOString();
+  const receipt: Receipt = {
+    schema: 1,
+    receiptId: plan.receiptId,
+    harness: plan.harness,
+    version: plan.version,
+    cli: plan.cli,
+    scope: plan.scope,
+    scopeKey: plan.scopeKey,
+    projectPath: plan.projectPath,
+    installedAt: now,
+    weftVersion: env.weftVersion,
+    spoolSha: plan.spoolSha,
+    status: "installed",
+    placedFiles: [],
+    placedPayloads: [],
+    appliedFragments: [],
+    resolvedPlaceholders: {},
+    delegation: { installCmd: d.installCmd, uninstallCmd: d.uninstallCmd, dir: d.dir, exitCode, ranAt: now },
+    notes: dedupe(plan.notes),
+  };
+  const rp = receiptPath(env, receipt.receiptId);
+  mkdirSync(dirname(rp), { recursive: true });
+  writeFileSync(rp, `${JSON.stringify(receipt, null, 2)}\n`);
+  return { receipt, warnings: [], conflicts: [] };
+}
+
+/**
+ * Upgrade a `delegated` install in place: run the recipe's `upgradeCmd` (falling back to `installCmd`)
+ * on the user's machine, then rewrite the receipt at the new version. Consent is the caller's job.
+ */
+export async function upgradeDelegated(
+  env: WeftEnv,
+  oldReceipt: Receipt,
+  newPlan: ExecutionPlan,
+): Promise<ApplyResult> {
+  const d = newPlan.delegate;
+  if (!d) throw new Error("weft: upgradeDelegated called without a delegated plan");
+
+  const missing = d.requires.filter((bin) => !hasOnPath(bin));
+  if (missing.length) {
+    throw new Error(`weft: ${newPlan.harness} needs ${missing.join(", ")} on PATH to upgrade — install and retry.`);
+  }
+
+  const cmd = d.upgradeCmd ?? d.installCmd;
+  const exitCode = runShell(cmd, env);
+  if (exitCode !== 0) {
+    throw new Error(`weft: the ${newPlan.harness} upgrade command exited with code ${exitCode}; receipt left unchanged.`);
+  }
+
+  const now = new Date().toISOString();
+  const receipt: Receipt = {
+    schema: 1,
+    receiptId: newPlan.receiptId,
+    harness: newPlan.harness,
+    version: newPlan.version,
+    cli: newPlan.cli,
+    scope: newPlan.scope,
+    scopeKey: newPlan.scopeKey,
+    projectPath: newPlan.projectPath,
+    installedAt: now,
+    weftVersion: env.weftVersion,
+    spoolSha: newPlan.spoolSha,
+    status: "installed",
+    placedFiles: [],
+    placedPayloads: [],
+    appliedFragments: [],
+    resolvedPlaceholders: {},
+    delegation: { installCmd: d.installCmd, uninstallCmd: d.uninstallCmd, dir: d.dir, exitCode, ranAt: now },
+    notes: dedupe(newPlan.notes),
+  };
+  const rp = receiptPath(env, receipt.receiptId);
+  mkdirSync(dirname(rp), { recursive: true });
+  writeFileSync(rp, `${JSON.stringify(receipt, null, 2)}\n`);
+  if (oldReceipt.receiptId !== receipt.receiptId) rmSync(receiptPath(env, oldReceipt.receiptId), { force: true });
+  return { receipt, warnings: [], conflicts: [] };
+}
+
 // ───────────────────────────── install ─────────────────────────────
 
 export async function installPlan(env: WeftEnv, adapter: CliAdapter, plan: ExecutionPlan): Promise<ApplyResult> {
@@ -210,6 +345,17 @@ export async function uninstallReceipt(
 ): Promise<{ warnings: string[]; conflicts: string[] }> {
   const warnings: string[] = [];
   const conflicts: string[] = [];
+
+  // Delegated (cask) installs placed nothing weft tracks — hand removal to the tool's OWN uninstaller
+  // (recorded at install), then drop the receipt. Consent is the caller's responsibility.
+  if (receipt.delegation) {
+    const exitCode = runShell(receipt.delegation.uninstallCmd, env);
+    if (exitCode !== 0) {
+      warnings.push(`${receipt.harness} uninstaller exited ${exitCode}; some files may remain in ${receipt.delegation.dir}`);
+    }
+    rmSync(receiptPath(env, receipt.receiptId), { force: true });
+    return { warnings, conflicts };
+  }
 
   const fragTargets = dedupe(receipt.appliedFragments.map((f) => f.targetAbs));
   const skip = new Set<string>();

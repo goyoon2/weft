@@ -88,12 +88,41 @@ export interface CaptureSpec {
   normalize?: CaptureNormalizeRule[];
 }
 
+/**
+ * The `delegated` (cask) strategy: weft does NOT reproduce the install as static files — it ships a
+ * *recipe* and runs the upstream tool's OWN installer **on the user's machine at install time**.
+ * This is the one place weft executes untrusted upstream code (a deliberate, consent-gated exception
+ * to "never delegate trust"); use it only for tools whose install is itself a build/download that
+ * can't be snapshotted (native binaries, per-OS assets, whole-repo runtimes — e.g. gstack).
+ *
+ * Tokens substituted into the commands at install time: `{dir}` (resolved install dir for the scope),
+ * `{home}` (the user's home), `{scopeFlag}` (`--global`/`--local`), `{ref}`, `{version}`.
+ */
+export interface DelegateSpec {
+  /** Command run on the user's machine to install (e.g. `git clone … {dir} && cd {dir} && ./setup`). */
+  installCmd: string;
+  /** Command that undoes the install — recorded into the receipt and run on uninstall. */
+  uninstallCmd: string;
+  /** Optional in-place upgrade command; falls back to re-running `installCmd` when omitted. */
+  upgradeCmd?: string;
+  /** Where the tool installs itself, per scope (a `{home}`-templated path). A scope with no dir is skipped. */
+  dir: { global?: string; local?: string };
+  /** Executables that must be on PATH for the install to work (e.g. `["git", "bun"]`). */
+  requires?: string[];
+  /** One-line human summary of what the installer does, shown in the consent prompt. */
+  summary?: string;
+  /** File in the source tree whose trimmed contents become the version string (e.g. `"VERSION"`). */
+  versionFile?: string;
+}
+
 export interface TargetBuildSpec {
-  strategy: "declarative" | "captured";
+  strategy: "declarative" | "captured" | "delegated";
   /** Declarative strategy: explicit slot mappings. */
   map?: SlotMapRule[];
-  /** Captured strategy (future): run the upstream installer in a sandbox and diff. */
+  /** Captured strategy: run the upstream installer in a build sandbox and snapshot it. */
   capture?: CaptureSpec;
+  /** Delegated (cask) strategy: run the upstream installer on the user's machine at install time. */
+  delegate?: DelegateSpec;
   /** Content transforms applied after mapping. */
   transforms?: TransformRule[];
 }
@@ -112,7 +141,14 @@ export type LivecheckStrategy =
   /** The repo's "latest" GitHub release tag (`/releases/latest`). */
   | "github-latest"
   /** Highest semver among the repo's git tags via the GitHub API (`/tags`). */
-  | "github-tags";
+  | "github-tags"
+  /**
+   * Read a **version file** from the repo over a raw GitHub URL — for tagless, branch-tracked repos
+   * whose version lives in a file (e.g. gstack's `VERSION`). Never derived: a pattern must opt in
+   * explicitly with `strategy: version-file` + `versionFile`. The raw file contents (trimmed) are the
+   * version verbatim, so they match a build that read the same file via `delegate.versionFile`.
+   */
+  | "version-file";
 
 /**
  * Optional **livecheck** descriptor — the Homebrew-`livecheck` analogue. Declares how to *observe*
@@ -138,8 +174,10 @@ export interface LivecheckSpec {
   distTag?: string;
   /** `git-tags`/`github-tags`: only consider tags matching this glob, e.g. `"v*"`. */
   tagPattern?: string;
-  /** `git-tags`: query this repo URL when it differs from `source` (rare). */
+  /** `git-tags`/`github-*`: query this repo URL/`owner/repo` when it differs from `source` (rare). */
   repoUrl?: string;
+  /** `version-file`: path of the version file in the repo (e.g. `"VERSION"`). Read at `source.ref`. */
+  versionFile?: string;
 }
 
 /** A human-authored harness recipe (`weft-mill/patterns/<id>.yaml`). The formula analogue. */
@@ -242,6 +280,26 @@ export interface MergeFragment {
   valueSha: Sha256;
 }
 
+/**
+ * The install recipe a `delegated` spool carries instead of static files. The commands keep their
+ * `{dir}`/`{home}`/`{scopeFlag}`/`{ref}`/`{version}` tokens; the client resolves them at install time
+ * (it alone knows the user's `home`). A delegated spool has empty `files`/`payloads`/`fragments`.
+ */
+export interface DelegateRecipe {
+  installCmd: string;
+  uninstallCmd: string;
+  upgradeCmd?: string;
+  /** `{home}`-templated install dir for this spool's scope. */
+  dir: string;
+  /** Executables that must be on PATH before running. */
+  requires: string[];
+  summary?: string;
+  /** Value of `{ref}` (e.g. `"main"` or a tag). */
+  ref: string;
+  /** Value of `{version}` (the resolved version string). */
+  version: string;
+}
+
 /** A normalized, ready-to-merge snapshot for one `(harness, version, cli, scope)`. */
 export interface Spool {
   schema: 1;
@@ -255,6 +313,8 @@ export interface Spool {
   fragments: MergeFragment[];
   /** Placeholders the client must resolve at install, e.g. `["WEFT_PAYLOAD_DIR"]`. */
   placeholders: string[];
+  /** Present only for `delegated` (cask) spools: the installer recipe to run on the user's machine. */
+  delegate?: DelegateRecipe;
   /** Integrity of the archive payload. */
   archiveSha: Sha256;
 }
@@ -296,6 +356,22 @@ export interface AppliedFragment {
   valueSha: Sha256;
 }
 
+/**
+ * The record of a `delegated` install: the exact commands run, so uninstall can delegate cleanly to
+ * the tool's own uninstaller. Present only on receipts for `delegated` (cask) spools.
+ */
+export interface DelegationRecord {
+  /** The fully-resolved install command that was run on the user's machine. */
+  installCmd: string;
+  /** The fully-resolved uninstall command to run on uninstall. */
+  uninstallCmd: string;
+  /** Resolved install dir (for display and as a fallback to remove). */
+  dir: string;
+  /** Exit code of the install command (`0` on success). */
+  exitCode: number;
+  ranAt: string;
+}
+
 /** The exact record of one successful install (`~/.weft/receipts/<receiptId>.json`). */
 export interface Receipt {
   schema: 1;
@@ -316,6 +392,8 @@ export interface Receipt {
   placedPayloads: PlacedPayload[];
   appliedFragments: AppliedFragment[];
   resolvedPlaceholders: Record<string, string>;
+  /** Present only for `delegated` installs: the commands run, for clean uninstall. */
+  delegation?: DelegationRecord;
   /** Fidelity warnings surfaced to the user. */
   notes?: string[];
 }

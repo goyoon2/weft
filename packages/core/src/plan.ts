@@ -41,6 +41,16 @@ export interface PlannedFragment {
   targetAbs: string;
 }
 
+/** A `delegated` spool's recipe with every install-time token resolved, ready to run. */
+export interface ResolvedDelegate {
+  installCmd: string;
+  uninstallCmd: string;
+  upgradeCmd?: string;
+  dir: string;
+  requires: string[];
+  summary?: string;
+}
+
 export interface ExecutionPlan {
   harness: string;
   version: string;
@@ -55,7 +65,14 @@ export interface ExecutionPlan {
   payloads: PlannedPayload[];
   fragments: PlannedFragment[];
   configTargets: string[];
+  /** Present only for `delegated` (cask) installs: the resolved installer commands to run. */
+  delegate?: ResolvedDelegate;
   notes: string[];
+}
+
+/** Substitute `{token}` placeholders; unknown tokens are left verbatim. */
+function fillTokens(s: string, tok: Record<string, string>): string {
+  return s.replace(/\{(\w+)\}/g, (m, k: string) => (k in tok ? (tok[k] ?? m) : m));
 }
 
 export interface BuildPlanArgs {
@@ -173,6 +190,24 @@ export async function buildPlan(args: BuildPlanArgs): Promise<ExecutionPlan> {
     );
   }
 
+  // Delegated (cask) spools carry no files — resolve their installer recipe's install-time tokens
+  // ({dir}/{home}/{scopeFlag}) here, where the client knows the user's home and the chosen scope.
+  let delegate: ResolvedDelegate | undefined;
+  if (spool.delegate) {
+    const home = env.home;
+    const scopeFlag = scope === "global" ? "--global" : "--local";
+    const dir = fillTokens(spool.delegate.dir, { home });
+    const tok = { home, dir, scopeFlag, ref: spool.delegate.ref, version: spool.delegate.version };
+    delegate = {
+      installCmd: fillTokens(spool.delegate.installCmd, tok),
+      uninstallCmd: fillTokens(spool.delegate.uninstallCmd, tok),
+      upgradeCmd: spool.delegate.upgradeCmd ? fillTokens(spool.delegate.upgradeCmd, tok) : undefined,
+      dir,
+      requires: spool.delegate.requires,
+      summary: spool.delegate.summary,
+    };
+  }
+
   return {
     harness: spool.harness,
     version: spool.version,
@@ -187,6 +222,7 @@ export async function buildPlan(args: BuildPlanArgs): Promise<ExecutionPlan> {
     payloads,
     fragments,
     configTargets,
+    delegate,
     notes,
   };
 }
