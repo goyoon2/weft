@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildHarness } from "@weft/loom";
 import type { BuiltSpool } from "@weft/loom";
+import { relativizeSpoolUrl } from "@weft/schema";
 import type { Index, IndexVersion } from "@weft/schema";
 import { gsdFixtureDir, gsdPattern } from "../../loom/test/fixtures/gsd-pattern";
 import {
@@ -78,12 +79,122 @@ beforeAll(async () => {
 });
 
 describe("update + search", () => {
-  it("pulls the index and finds gsd-core (incl. typo + cli alias)", () => {
+  it("pulls the index and finds gsd-core (incl. typo + cli alias)", async () => {
     const env = makeEnv(tmp("weft-home-"), tmp("weft-cwd-"), indexSource);
-    expect(updateIndex(env).entries).toBe(1);
+    expect((await updateIndex(env)).entries).toBe(1);
     expect(searchOp(env, "gsd").map((h) => h.entry.id)).toContain("gsd-core");
     expect(searchOp(env, "gsd-cor").map((h) => h.entry.id)).toContain("gsd-core");
     expect(searchOp(env, "cluade").map((h) => h.entry.id)).toContain("gsd-core"); // alias → claude-code
+  });
+});
+
+describe("remote (http) catalog", () => {
+  it("updates from a hosted index and installs by downloading + hash-verifying spools", async () => {
+    // A committed-style catalog served over http: index.json with RELATIVE spool urls, spools
+    // sitting alongside it — exactly the raw.githubusercontent.com shape.
+    const served = tmp("weft-served-");
+    const built = await buildHarness(gsdPattern, { outDir: served, sourceDir: gsdFixtureDir });
+    const index: Index = {
+      schema: 1,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      entries: [
+        {
+          id: gsdPattern.id,
+          displayName: gsdPattern.displayName,
+          description: gsdPattern.description,
+          keywords: gsdPattern.keywords ?? [],
+          latest: built.version,
+          clis: ["claude-code"],
+          versions: [
+            {
+              version: built.version,
+              spools: built.spools.map((s) => ({
+                cli: s.cli,
+                scope: s.scope,
+                url: relativizeSpoolUrl(pathToFileURL(s.tgzPath).href, served),
+                spoolSha: s.spoolSha,
+                spoolJsonSha: s.spoolJsonSha,
+              })),
+            },
+          ],
+        },
+      ],
+    };
+    writeFileSync(join(served, "index.json"), JSON.stringify(index));
+
+    // Serve `served/` over a mocked fetch, keyed by url pathname — no network, no real server.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = join(served, decodeURIComponent(new URL(href).pathname));
+      if (!existsSync(path)) return new Response("not found", { status: 404 });
+      return new Response(readFileSync(path), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const home = tmp("weft-home-http-");
+      const env = makeEnv(home, tmp("weft-cwd-http-"), "https://mill.test/index.json");
+      expect((await updateIndex(env)).entries).toBe(1);
+
+      const ins = await installHarness(env, { harness: "gsd-core", cli: "claude-code", scope: "global" });
+      expect(ins.status).toBe("installed");
+      expect(existsSync(join(home, ".claude", "commands", "gsd-plan.md"))).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("rejects a tampered spool (hash mismatch) downloaded over http", async () => {
+    const served = tmp("weft-served-bad-");
+    const built = await buildHarness(gsdPattern, { outDir: served, sourceDir: gsdFixtureDir });
+    const index: Index = {
+      schema: 1,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      entries: [
+        {
+          id: gsdPattern.id,
+          displayName: gsdPattern.displayName,
+          description: gsdPattern.description,
+          keywords: gsdPattern.keywords ?? [],
+          latest: built.version,
+          clis: ["claude-code"],
+          versions: [
+            {
+              version: built.version,
+              spools: built.spools.map((s) => ({
+                cli: s.cli,
+                scope: s.scope,
+                url: relativizeSpoolUrl(pathToFileURL(s.tgzPath).href, served),
+                spoolSha: s.spoolSha,
+                spoolJsonSha: s.spoolJsonSha,
+              })),
+            },
+          ],
+        },
+      ],
+    };
+    writeFileSync(join(served, "index.json"), JSON.stringify(index));
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = decodeURIComponent(new URL(href).pathname);
+      // Corrupt every spool .tgz on the wire; the index.json passes through intact.
+      if (path.endsWith(".spool.tgz")) return new Response("corrupted-bytes", { status: 200 });
+      const abs = join(served, path);
+      if (!existsSync(abs)) return new Response("not found", { status: 404 });
+      return new Response(readFileSync(abs), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const env = makeEnv(tmp("weft-home-bad-"), tmp("weft-cwd-bad-"), "https://mill.test/index.json");
+      await updateIndex(env);
+      await expect(
+        installHarness(env, { harness: "gsd-core", cli: "claude-code", scope: "global" }),
+      ).rejects.toThrow(/hash mismatch/);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

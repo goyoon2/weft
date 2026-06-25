@@ -1,5 +1,6 @@
 export * from "./paths";
 export * from "./receipts";
+export * from "./http";
 export * from "./index-store";
 export * from "./spool-fetch";
 export * from "./subst";

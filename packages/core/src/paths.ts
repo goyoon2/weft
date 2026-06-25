@@ -19,6 +19,13 @@ export interface WeftEnv {
   weftVersion: string;
 }
 
+/**
+ * Default hosted catalog: the committed index.json of the weft-mill repo, served over raw GitHub.
+ * Spools are committed alongside it, so `weft update` + `weft install` work against the remote repo
+ * with no clone. Override with WEFT_INDEX_URL, or WEFT_MILL_DIR for a local mill (dev).
+ */
+export const DEFAULT_MILL_INDEX_URL = "https://raw.githubusercontent.com/goyoon2/weft-mill/main/index.json";
+
 /** Build an env from process state. Refuses the real HOME under tests unless explicitly overridden. */
 export function defaultEnv(overrides: Partial<WeftEnv> = {}): WeftEnv {
   const override = process.env.WEFT_HOME_OVERRIDE;
@@ -31,7 +38,7 @@ export function defaultEnv(overrides: Partial<WeftEnv> = {}): WeftEnv {
   const millIndexSource =
     overrides.millIndexSource ??
     process.env.WEFT_INDEX_URL ??
-    (millDir ? join(millDir, "index.json") : join(weftDir, "cache", "index.json"));
+    (millDir ? join(millDir, "index.json") : DEFAULT_MILL_INDEX_URL);
   return {
     home,
     weftDir,

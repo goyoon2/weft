@@ -53,3 +53,21 @@ export function relativizeEntrySpools(entry: IndexEntry, millDir: string): Index
 export function absolutizeIndexSpools(index: Index, millDir: string): Index {
   return { ...index, entries: index.entries.map((e) => mapEntrySpools(e, (u) => absolutizeSpoolUrl(u, millDir))) };
 }
+
+/**
+ * Absolutize a relative spool url against the INDEX's own url — the hosted (http(s)) analogue of
+ * {@link absolutizeSpoolUrl}. A committed catalog stores spool urls relative to index.json, so
+ * `spools/x.tgz` next to `https://host/path/index.json` resolves to `https://host/path/spools/x.tgz`.
+ * Already-absolute urls pass through untouched.
+ */
+export function absolutizeSpoolUrlAgainstIndex(url: string, indexUrl: string): string {
+  return hasScheme(url) ? url : new URL(url, indexUrl).href;
+}
+
+/** Absolutize every spool url in an index against the index's own (hosted) url. */
+export function absolutizeIndexSpoolsAgainstUrl(index: Index, indexUrl: string): Index {
+  return {
+    ...index,
+    entries: index.entries.map((e) => mapEntrySpools(e, (u) => absolutizeSpoolUrlAgainstIndex(u, indexUrl))),
+  };
+}

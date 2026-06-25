@@ -118,9 +118,9 @@ export function buildProgram(): Command {
   program
     .command("update")
     .description("refresh the catalog from the mill")
-    .action(() => {
+    .action(async () => {
       const env = defaultEnv({ weftVersion: VERSION });
-      const { entries } = updateIndex(env);
+      const { entries } = await updateIndex(env);
       console.log(`✓ catalog updated — ${entries} harness(es) available.`);
     });
 
