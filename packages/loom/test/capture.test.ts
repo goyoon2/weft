@@ -69,3 +69,54 @@ describe("loom capture path normalization", () => {
     expect(archived("readme.txt")).toBe("hello\n");
   });
 });
+
+// Regression for the CI failure: an XDG-aware installer (e.g. opencode's global config) writes to
+// $XDG_CONFIG_HOME, which points OUTSIDE the sandbox on hosts that set it (GitHub runners do). The
+// capture must pin XDG_* into the sandbox, or it finds nothing. Here a decoy XDG_CONFIG_HOME is set
+// before the capture; the fake installer writes only to $XDG_CONFIG_HOME, and configDir is an XDG
+// path — so this passes only if the capture overrode XDG_CONFIG_HOME to its own sandbox.
+describe("loom capture XDG isolation", () => {
+  const xdgScript = join(scriptDir, "fake-xdg-install.sh");
+  writeFileSync(
+    xdgScript,
+    ['#!/bin/sh', 'set -e', 'mkdir -p "$XDG_CONFIG_HOME/app"', 'printf "ok\\n" > "$XDG_CONFIG_HOME/app/conf"', ""].join(
+      "\n",
+    ),
+  );
+  chmodSync(xdgScript, 0o755);
+
+  const decoy = mkdtempSync(join(tmpdir(), "weft-capture-xdg-decoy-"));
+  const xdgStaging = mkdtempSync(join(tmpdir(), "weft-capture-xdg-staging-"));
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = decoy; // host sets XDG_CONFIG_HOME outside the sandbox
+  let built2: ReturnType<typeof buildCapturedSpoolForTarget> | undefined;
+  let captureError: unknown;
+  try {
+    built2 = buildCapturedSpoolForTarget({
+      harnessId: "fake-xdg",
+      pkg: "fake-pkg",
+      capture: { installCmd: `sh ${xdgScript}`, configDir: ".config/app" },
+      cli: "opencode",
+      scope: "global",
+      version: "0.0.0",
+      stagingDir: xdgStaging,
+    });
+  } catch (err) {
+    captureError = err;
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+
+  afterAll(() => {
+    rmSync(decoy, { recursive: true, force: true });
+    rmSync(xdgStaging, { recursive: true, force: true });
+  });
+
+  it("captures an XDG-aware install despite a host XDG_CONFIG_HOME pointing elsewhere", () => {
+    expect(captureError).toBeUndefined();
+    // configDir is ".config/app", so that dir is the payload root and "conf" sits at its top.
+    expect(built2?.spool.payloads[0]?.entries.map((e) => e.rel)).toEqual(["conf"]);
+    expect(readFileSync(join(xdgStaging, "payloads/fake-xdg", "conf"), "utf8")).toBe("ok\n");
+  });
+});

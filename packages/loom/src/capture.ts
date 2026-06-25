@@ -64,7 +64,7 @@ export function buildCapturedSpoolForTarget(args: {
   const { harnessId, pkg, capture, cli, scope, version, stagingDir } = args;
   const notes: string[] = [];
 
-  // ── 1. run the upstream installer in a throwaway, HOME-isolated sandbox ──
+  // ── 1. run the upstream installer in a throwaway, fully-isolated sandbox ──
   const sandbox = mkdtempSync(join(tmpdir(), `weft-capture-${harnessId}-`));
   const scopeFlag = scope === "global" ? "--global" : "--local";
   const cmd = capture.installCmd
@@ -74,7 +74,21 @@ export function buildCapturedSpoolForTarget(args: {
   try {
     execSync(cmd, {
       cwd: sandbox,
-      env: { ...process.env, HOME: sandbox, npm_config_yes: "true", CI: "1", DO_NOT_TRACK: "1" },
+      // HOME alone doesn't contain an installer: XDG_* point outside it on many machines
+      // (GitHub-hosted runners set XDG_CONFIG_HOME), so an XDG-aware installer — e.g. opencode's
+      // global config dir — would write OUTSIDE the snapshot and capture would find nothing.
+      // Pin every XDG base inside the sandbox so the result is identical on macOS, Linux, and CI.
+      env: {
+        ...process.env,
+        HOME: sandbox,
+        XDG_CONFIG_HOME: join(sandbox, ".config"),
+        XDG_DATA_HOME: join(sandbox, ".local", "share"),
+        XDG_STATE_HOME: join(sandbox, ".local", "state"),
+        XDG_CACHE_HOME: join(sandbox, ".cache"),
+        npm_config_yes: "true",
+        CI: "1",
+        DO_NOT_TRACK: "1",
+      },
       stdio: "pipe",
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -198,6 +212,7 @@ export function buildCapturedSpoolForTarget(args: {
   const ignore = new Set([
     configRel.split("/")[0],
     ".npm",
+    ".config", // XDG_CONFIG_HOME — pinned into the sandbox; not part of any one CLI's surface
     ".cache",
     ".npmrc",
     ".node_repl_history",
