@@ -1,0 +1,23 @@
+name: ci
+
+# Engine repo: typecheck + unit tests. Cheap (no network) — guards the capture/normalization
+# logic (packages/loom/test/capture.test.ts) so a machine-path-leak regression is caught here
+# long before the mill's full catalog rebuild.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test

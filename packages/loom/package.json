@@ -1,0 +1,19 @@
+{
+  "name": "@weft/loom",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
+  },
+  "dependencies": {
+    "@weft/schema": "workspace:*",
+    "semver": "^7.6.3",
+    "tar": "^7.4.3",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.5.8"
+  }
+}

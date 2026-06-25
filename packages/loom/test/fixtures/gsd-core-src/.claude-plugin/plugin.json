@@ -1,0 +1,7 @@
+{
+  "name": "gsd-core",
+  "version": "1.5.0",
+  "commands": "./commands",
+  "agents": "./agents",
+  "hooks": "./hooks/hooks.json"
+}

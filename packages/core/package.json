@@ -1,0 +1,19 @@
+{
+  "name": "@weft/core",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
+  },
+  "dependencies": {
+    "@weft/adapters": "workspace:*",
+    "@weft/schema": "workspace:*",
+    "fastest-levenshtein": "^1.0.16",
+    "tar": "^7.4.3"
+  },
+  "devDependencies": {
+    "@weft/loom": "workspace:*"
+  }
+}
