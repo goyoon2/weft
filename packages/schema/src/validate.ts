@@ -33,6 +33,21 @@ const transformRule = z.object({
   to: z.string(),
 });
 
+const livecheckSpec = z
+  .object({
+    skip: z.boolean().optional(),
+    skipReason: z.string().min(1).optional(),
+    strategy: z.enum(["npm-dist-tag", "git-tags", "github-latest", "github-tags"]).optional(),
+    distTag: z.string().min(1).optional(),
+    tagPattern: z.string().min(1).optional(),
+    repoUrl: z.string().min(1).optional(),
+  })
+  // The `no_autobump!` rule: opting out must say why.
+  .refine((v) => !v.skip || !!v.skipReason, {
+    message: "livecheck.skip requires livecheck.skipReason",
+    path: ["skipReason"],
+  });
+
 const targetBuildSpec = z.object({
   strategy: z.enum(["declarative", "captured"]),
   map: z.array(slotMapRule).optional(),
@@ -66,6 +81,7 @@ const patternSchema = z.object({
   namespace: z
     .object({ mode: z.enum(["as-is", "prefix"]), prefix: z.string().optional() })
     .optional(),
+  livecheck: livecheckSpec.optional(),
   targets: z.record(cliId, targetBuildSpec),
 });
 
@@ -80,7 +96,7 @@ const spoolRef = z.object({
 
 const indexSchema = z.object({
   schema: z.literal(1),
-  generatedAt: z.string(),
+  generatedAt: z.string().optional(),
   entries: z.array(
     z.object({
       id: z.string(),

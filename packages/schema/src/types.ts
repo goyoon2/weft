@@ -103,6 +103,45 @@ export interface NamespaceSpec {
   prefix?: string;
 }
 
+/** How `resolveUpstreamVersion` discovers the newest upstream version (the strategy keys mirror Homebrew livecheck strategies). */
+export type LivecheckStrategy =
+  /** Read a dist-tag (default `latest`) from the npm registry — metadata only, no tarball. */
+  | "npm-dist-tag"
+  /** `git ls-remote --tags`, pick the highest semver tag. */
+  | "git-tags"
+  /** The repo's "latest" GitHub release tag (`/releases/latest`). */
+  | "github-latest"
+  /** Highest semver among the repo's git tags via the GitHub API (`/tags`). */
+  | "github-tags";
+
+/**
+ * Optional **livecheck** descriptor — the Homebrew-`livecheck` analogue. Declares how to *observe*
+ * the newest upstream version cheaply (a registry/API metadata call, no tarball download) so a
+ * scheduled job can detect drift between what the catalog was built at and what upstream now ships
+ * — without a full rebuild.
+ *
+ * When omitted, the check is **derived** from {@link SourceSpec} (+ `versioning.track`):
+ *   - `npm`            → the `latest` dist-tag (`npm-dist-tag`)
+ *   - `git`            → highest semver tag (`git-tags`)
+ *   - `github-release` → the latest published release (`github-latest`)
+ *
+ * Add a block only to override that default or to opt out.
+ */
+export interface LivecheckSpec {
+  /** Opt this pattern out of version observation — the `no_autobump!` analogue. Requires `skipReason`. */
+  skip?: boolean;
+  /** Why it's excluded (mirrors Homebrew's mandatory `no_autobump!` reason). Required when `skip`. */
+  skipReason?: string;
+  /** Override the strategy derived from `source`. */
+  strategy?: LivecheckStrategy;
+  /** `npm-dist-tag`: which dist-tag to read (default `latest`). */
+  distTag?: string;
+  /** `git-tags`/`github-tags`: only consider tags matching this glob, e.g. `"v*"`. */
+  tagPattern?: string;
+  /** `git-tags`: query this repo URL when it differs from `source` (rare). */
+  repoUrl?: string;
+}
+
 /** A human-authored harness recipe (`weft-mill/patterns/<id>.yaml`). The formula analogue. */
 export interface HarnessPattern {
   schema: 1;
@@ -114,6 +153,8 @@ export interface HarnessPattern {
   source: SourceSpec;
   versioning: { strategy: "semver"; track?: "latest" | "tagged" };
   namespace?: NamespaceSpec;
+  /** How to observe upstream version drift. Optional — derived from `source` when omitted. */
+  livecheck?: LivecheckSpec;
   /** Presence of a CLI key declares support for that CLI. */
   targets: Partial<Record<CliId, TargetBuildSpec>>;
 }
@@ -148,7 +189,11 @@ export interface IndexEntry {
 /** The thin catalog `weft update` downloads. */
 export interface Index {
   schema: 1;
-  generatedAt: string;
+  /**
+   * Optional build timestamp. Omitted from the committed mill catalog so a pure upstream-version
+   * bump produces a clean, single-harness diff (a wall-clock stamp would churn every rebuild).
+   */
+  generatedAt?: string;
   entries: IndexEntry[];
 }
 
