@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extract as tarExtract } from "tar";
 import { parseSpool, sha256OfBytes, sha256OfFile } from "@weft/schema";
 import type { Spool, SpoolRef } from "@weft/schema";
+import { ghHeaders } from "./http";
 
 export interface FetchedSpool {
   spool: Spool;
@@ -17,18 +18,28 @@ function toLocalPath(url: string): string | undefined {
   return url;
 }
 
+/** Resolve a spool ref to a local `.tgz` path: a `file://`/local path as-is, or download an http one. */
+async function resolveArchivePath(ref: SpoolRef, cacheDir: string): Promise<string> {
+  const local = toLocalPath(ref.url);
+  if (local !== undefined) {
+    if (!existsSync(local)) throw new Error(`weft: spool archive not found at ${local}`);
+    return local;
+  }
+  // Hosted spool: download to a temp file, then the same hash-verify + extract path runs over it.
+  const res = await fetch(ref.url, { headers: ghHeaders(ref.url) });
+  if (!res.ok) throw new Error(`weft: GET ${ref.url} → ${res.status} ${res.statusText}`);
+  mkdirSync(cacheDir, { recursive: true });
+  const dl = join(mkdtempSync(join(cacheDir, "dl-")), "spool.tgz");
+  writeFileSync(dl, Buffer.from(await res.arrayBuffer()));
+  return dl;
+}
+
 /**
- * Download (here: resolve a local `file://`), integrity-check, and extract a spool.
+ * Resolve (download for http, or read a local `file://`), integrity-check, and extract a spool.
  * Verifies the archive hash and the embedded spool.json hash against the index ref.
  */
 export async function fetchSpool(ref: SpoolRef, cacheDir: string): Promise<FetchedSpool> {
-  const srcPath = toLocalPath(ref.url);
-  if (srcPath === undefined) {
-    throw new Error(`weft: remote spools are not supported in this build (${ref.url})`);
-  }
-  if (!existsSync(srcPath)) {
-    throw new Error(`weft: spool archive not found at ${srcPath}`);
-  }
+  const srcPath = await resolveArchivePath(ref, cacheDir);
 
   const archiveSha = await sha256OfFile(srcPath);
   if (archiveSha !== ref.spoolSha) {

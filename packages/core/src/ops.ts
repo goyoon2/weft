@@ -70,8 +70,8 @@ function installableClis(entry: IndexEntry): CliId[] {
   return entry.clis.filter((c) => isCliSupported(c));
 }
 
-export function updateIndex(env: WeftEnv): { entries: number } {
-  return { entries: pullIndex(env).entries.length };
+export async function updateIndex(env: WeftEnv): Promise<{ entries: number }> {
+  return { entries: (await pullIndex(env)).entries.length };
 }
 
 export interface CatalogItem {
