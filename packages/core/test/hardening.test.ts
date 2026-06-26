@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,10 +6,21 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { buildHarness } from "@weft/loom";
 import type { BuiltSpool } from "@weft/loom";
 import { getAdapter } from "@weft/adapters";
-import type { Index, IndexVersion, Spool } from "@weft/schema";
+import { sha256OfBytes } from "@weft/schema";
+import type { Index, IndexVersion, Sha256, Spool } from "@weft/schema";
 import { gsdFixtureDir, gsdPattern } from "../../loom/test/fixtures/gsd-pattern";
-import { buildPlan, ghHeaders, installHarness, uninstallHarness, upgradeHarness } from "../src/index";
-import type { WeftEnv } from "../src/index";
+import {
+  buildPlan,
+  ghHeaders,
+  installHarness,
+  installPlan,
+  listInstalled,
+  stateDirs,
+  uninstallHarness,
+  uninstallReceipt,
+  upgradeHarness,
+} from "../src/index";
+import type { ExecutionPlan, WeftEnv } from "../src/index";
 
 const cleanup: string[] = [];
 function tmp(prefix: string): string {
@@ -252,5 +263,109 @@ describe("ghHeaders token scoping", () => {
 
   it("never sends the token over plaintext http", () => {
     expect(ghHeaders("http://raw.githubusercontent.com/o/r/x").Authorization).toBeUndefined();
+  });
+});
+
+// ── pruneEmptyDirs stops at the receipt's OWN project root, never another project's tree ─────────
+
+describe("prune boundary is the receipt's project, not the cwd", () => {
+  let indexSource: string;
+  beforeAll(async () => {
+    const mill = tmp("weft-prune-mill-");
+    const v1 = await buildHarness(gsdPattern, { outDir: mill, sourceDir: gsdFixtureDir, version: "1.5.0" });
+    indexSource = writeIndex(mill, [versionRef(v1.spools, "1.5.0")], "1.5.0");
+  });
+
+  it("uninstalling a local receipt from a DIFFERENT cwd leaves that project's folder intact", async () => {
+    const home = tmp("weft-prune-home-");
+    const projA = tmp("weft-prune-projA-"); // the cwd we run from
+    const projB = tmp("weft-prune-projB-"); // where the install actually lives (otherwise empty)
+
+    const envB = makeEnv(home, projB, indexSource);
+    await installHarness(envB, { harness: "gsd-core", cli: "claude-code", scope: "local", version: "1.5.0" });
+    const receipt = listInstalled(envB).find((r) => r.scope === "local");
+    if (!receipt) throw new Error("expected a local receipt");
+    expect(existsSync(join(projB, ".claude"))).toBe(true);
+
+    // Run uninstall with cwd = projA (NOT projB). With the old cwd-based boundary, pruneEmptyDirs would
+    // walk up past the now-empty projB and rmdir it; with the fix it stops at the receipt's projectPath.
+    const envA = makeEnv(home, projA, indexSource);
+    await uninstallReceipt(envA, getAdapter("claude-code"), receipt);
+
+    expect(existsSync(join(projB, ".claude"))).toBe(false); // the install dir was cleaned
+    expect(existsSync(projB)).toBe(true); // but the project folder itself must survive
+  });
+});
+
+// ── a mid-transaction failure rolls back the shadow backup too (no orphan) ───────────────────────
+
+describe("shadow backup is journaled by the transaction", () => {
+  it("rolls back the backup blob and restores the original when a later file fails integrity", async () => {
+    const home = tmp("weft-txbk-home-");
+    const fetched = tmp("weft-txbk-fetched-");
+    const env = makeEnv(home, tmp("weft-txbk-cwd-"), "unused");
+
+    writeFileSync(join(fetched, "a.md"), "AAA");
+    writeFileSync(join(fetched, "b.md"), "BBB");
+    const shaA = sha256OfBytes("AAA");
+    const bad = `sha256:${"0".repeat(64)}` as Sha256; // wrong sha for b.md → writePlaced throws
+
+    const destA = join(home, ".claude", "agents", "a.md");
+    mkdirSync(dirname(destA), { recursive: true });
+    writeFileSync(destA, "ORIGINAL-A"); // a pre-existing foreign file → will be shadowed
+    const backupPath = join(stateDirs(env).backups, "rid", "files", "a.md");
+
+    const plan: ExecutionPlan = {
+      harness: "t",
+      version: "1.0.0",
+      cli: "claude-code",
+      scope: "global",
+      scopeKey: "global",
+      receiptId: "rid",
+      spoolSha: bad,
+      resolvedPlaceholders: {},
+      files: [
+        {
+          artifact: { slot: "agent", destRel: "a.md", archivePath: "a.md", sha: shaA, logicalName: "a" },
+          srcAbs: join(fetched, "a.md"),
+          destAbs: destA,
+          expectedSrcSha: shaA,
+          shadow: { backupPath, originalSha: sha256OfBytes("ORIGINAL-A") },
+        },
+        {
+          artifact: { slot: "agent", destRel: "b.md", archivePath: "b.md", sha: bad, logicalName: "b" },
+          srcAbs: join(fetched, "b.md"),
+          destAbs: join(home, ".claude", "agents", "b.md"),
+          expectedSrcSha: bad,
+        },
+      ],
+      payloads: [],
+      fragments: [],
+      configTargets: [],
+      notes: [],
+    };
+
+    await expect(installPlan(env, getAdapter("claude-code"), plan)).rejects.toThrow(/integrity/);
+    expect(readFileSync(destA, "utf8")).toBe("ORIGINAL-A"); // restored by rollback
+    expect(existsSync(backupPath)).toBe(false); // backup was journaled → removed on rollback (no orphan)
+  });
+});
+
+// ── the spool cache doesn't accumulate extracted/downloaded temp dirs ────────────────────────────
+
+describe("spool cache is not leaked", () => {
+  it("removes the extraction dir after a successful install", async () => {
+    const mill = tmp("weft-cache-mill-");
+    const v1 = await buildHarness(gsdPattern, { outDir: mill, sourceDir: gsdFixtureDir, version: "1.5.0" });
+    const idx = writeIndex(mill, [versionRef(v1.spools, "1.5.0")], "1.5.0");
+    const env = makeEnv(tmp("weft-cache-home-"), tmp("weft-cache-cwd-"), idx);
+
+    await installHarness(env, { harness: "gsd-core", cli: "claude-code", scope: "global", version: "1.5.0" });
+
+    const spools = stateDirs(env).spools;
+    const leftover = existsSync(spools)
+      ? readdirSync(spools).filter((n) => n.startsWith("spool-") || n.startsWith("dl-"))
+      : [];
+    expect(leftover).toEqual([]); // no orphaned spool-*/dl-* temp dirs
   });
 });
