@@ -8,6 +8,7 @@ import {
   installMatrix,
   listCatalog,
   listInstalled,
+  maybeAutoUpdate,
   searchOp,
   uninstallHarness,
   updateIndex,
@@ -136,7 +137,7 @@ export function buildProgram(): Command {
     .command("search [query]")
     .description("find harnesses in the catalog (typo-tolerant)")
     .option("--json", "output JSON")
-    .action((query: string | undefined, opts: { json?: boolean }) => {
+    .action(async (query: string | undefined, opts: { json?: boolean }) => {
       if (
         !needArg(query, {
           cmd: "search",
@@ -149,6 +150,7 @@ export function buildProgram(): Command {
         return;
       }
       const env = defaultEnv({ weftVersion: VERSION });
+      await maybeAutoUpdate(env);
       const hits = searchOp(env, query);
       if (opts.json) console.log(JSON.stringify(hits.map((h) => ({ id: h.entry.id, score: h.score })), null, 2));
       else console.log(renderSearch(hits, query));
@@ -158,7 +160,7 @@ export function buildProgram(): Command {
     .command("info [harness]")
     .description("show details and install state for a harness")
     .option("--json", "output JSON")
-    .action((harness: string | undefined, opts: { json?: boolean }) => {
+    .action(async (harness: string | undefined, opts: { json?: boolean }) => {
       if (
         !needArg(harness, {
           cmd: "info",
@@ -171,6 +173,7 @@ export function buildProgram(): Command {
         return;
       }
       const env = defaultEnv({ weftVersion: VERSION });
+      await maybeAutoUpdate(env);
       const { entry, installed } = infoHarness(env, harness);
       if (opts.json) console.log(JSON.stringify({ entry, installed }, null, 2));
       else console.log(renderInfo(entry, installed, env.home));
@@ -181,8 +184,9 @@ export function buildProgram(): Command {
     .alias("available")
     .description("list every harness available in the mill")
     .option("--json", "output JSON")
-    .action((opts: { json?: boolean }) => {
+    .action(async (opts: { json?: boolean }) => {
       const env = defaultEnv({ weftVersion: VERSION });
+      await maybeAutoUpdate(env);
       const items = listCatalog(env);
       if (opts.json) {
         console.log(
@@ -255,6 +259,7 @@ export function buildProgram(): Command {
           return;
         }
         const env = defaultEnv({ weftVersion: VERSION });
+        await maybeAutoUpdate(env);
         let targets: { cli: CliId; scope: Scope }[];
 
         if (opts.cli && opts.scope) {
