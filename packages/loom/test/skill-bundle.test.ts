@@ -16,7 +16,6 @@ const skillsPattern: HarnessPattern = {
   description: "fixture",
   source: { type: "git", url: "https://example.invalid/skills" },
   versioning: { strategy: "semver", track: "latest" },
-  namespace: { mode: "as-is" },
   targets: {
     "claude-code": {
       strategy: "declarative",

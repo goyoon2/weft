@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { getAdapter, isCliSupported, supportedClis } from "@weft/adapters";
 import type { CliId, IndexEntry, Receipt, Scope, SpoolRef } from "@weft/schema";
 import { ensureIndex, loadCachedIndex, pullIndex } from "./index-store";
@@ -234,44 +234,49 @@ export async function installHarness(
 
   const ref = resolveSpoolRef(entry, cli, scope, opts.version);
   const fetched = await fetchSpool(ref, stateDirs(env).spools);
-  const plan = await buildPlan({
-    env,
-    ctx,
-    scope,
-    scopeKey,
-    projectPath: scope === "local" ? ctx.projectRoot : undefined,
-    adapter,
-    spool: fetched.spool,
-    spoolSha: ref.spoolSha,
-    fetchedDir: fetched.dir,
-    receiptId: randomUUID(),
-  });
+  try {
+    const plan = await buildPlan({
+      env,
+      ctx,
+      scope,
+      scopeKey,
+      projectPath: scope === "local" ? ctx.projectRoot : undefined,
+      adapter,
+      spool: fetched.spool,
+      spoolSha: ref.spoolSha,
+      fetchedDir: fetched.dir,
+      receiptId: randomUUID(),
+    });
 
-  if (opts.dryRun) return { status: "planned", plan };
+    if (opts.dryRun) return { status: "planned", plan };
 
-  // Delegated (cask): weft runs the upstream installer on this machine — gate on explicit consent.
-  if (plan.delegate) {
-    const granted = opts.onDelegate
-      ? await opts.onDelegate({
-          action: "install",
-          harness,
-          cli,
-          scope,
-          cmd: plan.delegate.installCmd,
-          dir: plan.delegate.dir,
-          requires: plan.delegate.requires,
-          summary: plan.delegate.summary,
-        })
-      : false;
-    if (!granted) {
-      return { status: "declined", reason: "running the upstream installer was not approved" };
+    // Delegated (cask): weft runs the upstream installer on this machine — gate on explicit consent.
+    if (plan.delegate) {
+      const granted = opts.onDelegate
+        ? await opts.onDelegate({
+            action: "install",
+            harness,
+            cli,
+            scope,
+            cmd: plan.delegate.installCmd,
+            dir: plan.delegate.dir,
+            requires: plan.delegate.requires,
+            summary: plan.delegate.summary,
+          })
+        : false;
+      if (!granted) {
+        return { status: "declined", reason: "running the upstream installer was not approved" };
+      }
+      const result = await installDelegated(env, plan);
+      return { status: "installed", receipt: result.receipt, warnings: result.warnings };
     }
-    const result = await installDelegated(env, plan);
-    return { status: "installed", receipt: result.receipt, warnings: result.warnings };
-  }
 
-  const result = await installPlan(env, adapter, plan);
-  return { status: "installed", receipt: result.receipt, warnings: result.warnings };
+    const result = await installPlan(env, adapter, plan);
+    return { status: "installed", receipt: result.receipt, warnings: result.warnings };
+  } finally {
+    // The extracted spool tree was consumed by buildPlan/installPlan; don't leak it in the cache.
+    rmSync(fetched.dir, { recursive: true, force: true });
+  }
 }
 
 function matchReceipts(
@@ -347,38 +352,50 @@ async function upgradeOneReceipt(
 
   const ref = resolveSpoolRef(entry, oldReceipt.cli, oldReceipt.scope);
   const fetched = await fetchSpool(ref, stateDirs(env).spools);
-  const adapter = getAdapter(oldReceipt.cli);
-  const newPlan = await buildPlan({
-    env,
-    ctx: ctxForReceipt(env, oldReceipt),
-    scope: oldReceipt.scope,
-    scopeKey: oldReceipt.scopeKey,
-    projectPath: oldReceipt.projectPath,
-    adapter,
-    spool: fetched.spool,
-    spoolSha: ref.spoolSha,
-    fetchedDir: fetched.dir,
-    receiptId: randomUUID(),
-  });
+  try {
+    const adapter = getAdapter(oldReceipt.cli);
+    const newPlan = await buildPlan({
+      env,
+      ctx: ctxForReceipt(env, oldReceipt),
+      scope: oldReceipt.scope,
+      scopeKey: oldReceipt.scopeKey,
+      projectPath: oldReceipt.projectPath,
+      adapter,
+      spool: fetched.spool,
+      spoolSha: ref.spoolSha,
+      fetchedDir: fetched.dir,
+      receiptId: randomUUID(),
+    });
 
-  // Delegated (cask): upgrade re-runs the upstream tool's installer — gate on consent, like install.
-  if (newPlan.delegate) {
-    const granted = onDelegate
-      ? await onDelegate({
-          action: "install",
-          harness: oldReceipt.harness,
-          cli: oldReceipt.cli,
-          scope: oldReceipt.scope,
-          cmd: newPlan.delegate.upgradeCmd ?? newPlan.delegate.installCmd,
-          dir: newPlan.delegate.dir,
-          requires: newPlan.delegate.requires,
-          summary: newPlan.delegate.summary,
-        })
-      : false;
-    if (!granted) {
-      return { status: "skipped", reason: "upgrade runs the upstream installer; not approved (pass --trust)", receipt: oldReceipt };
+    // Delegated (cask): upgrade re-runs the upstream tool's installer — gate on consent, like install.
+    if (newPlan.delegate) {
+      const granted = onDelegate
+        ? await onDelegate({
+            action: "install",
+            harness: oldReceipt.harness,
+            cli: oldReceipt.cli,
+            scope: oldReceipt.scope,
+            cmd: newPlan.delegate.upgradeCmd ?? newPlan.delegate.installCmd,
+            dir: newPlan.delegate.dir,
+            requires: newPlan.delegate.requires,
+            summary: newPlan.delegate.summary,
+          })
+        : false;
+      if (!granted) {
+        return { status: "skipped", reason: "upgrade runs the upstream installer; not approved (pass --trust)", receipt: oldReceipt };
+      }
+      const result = await upgradeDelegated(env, oldReceipt, newPlan);
+      return {
+        status: "upgraded",
+        from: oldReceipt.version,
+        to: newPlan.version,
+        receipt: result.receipt,
+        warnings: result.warnings,
+        conflicts: result.conflicts,
+      };
     }
-    const result = await upgradeDelegated(env, oldReceipt, newPlan);
+
+    const result = await upgradeApply(env, adapter, oldReceipt, newPlan);
     return {
       status: "upgraded",
       from: oldReceipt.version,
@@ -387,17 +404,9 @@ async function upgradeOneReceipt(
       warnings: result.warnings,
       conflicts: result.conflicts,
     };
+  } finally {
+    rmSync(fetched.dir, { recursive: true, force: true });
   }
-
-  const result = await upgradeApply(env, adapter, oldReceipt, newPlan);
-  return {
-    status: "upgraded",
-    from: oldReceipt.version,
-    to: newPlan.version,
-    receipt: result.receipt,
-    warnings: result.warnings,
-    conflicts: result.conflicts,
-  };
 }
 
 export async function upgradeHarness(

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseReceipt } from "@weft/schema";
 import type { CliId, Receipt } from "@weft/schema";
@@ -37,15 +37,4 @@ export function findReceipts(env: WeftEnv, q: ReceiptQuery): Receipt[] {
 
 export function isInstalled(env: WeftEnv, harness: string, cli: CliId, scopeKey: string): boolean {
   return findReceipts(env, { harness, cli, scopeKey }).length > 0;
-}
-
-export function writeReceipt(env: WeftEnv, receipt: Receipt): void {
-  const dir = stateDirs(env).receipts;
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${receipt.receiptId}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
-}
-
-export function deleteReceipt(env: WeftEnv, receiptId: string): void {
-  const path = join(stateDirs(env).receipts, `${receiptId}.json`);
-  if (existsSync(path)) rmSync(path);
 }

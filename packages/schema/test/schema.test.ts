@@ -46,7 +46,6 @@ describe("validate", () => {
     description: "Spec-driven development system.",
     source: { type: "npm", package: "@opengsd/gsd-core" },
     versioning: { strategy: "semver", track: "latest" },
-    namespace: { mode: "as-is" },
     targets: {
       "claude-code": {
         strategy: "declarative",
@@ -75,6 +74,21 @@ describe("validate", () => {
     expect(() =>
       parsePattern({ ...validPattern, targets: { vim: { strategy: "declarative" } } }),
     ).toThrow();
+  });
+
+  it("rejects a captured target with no capture block (brew-audit-style parse check)", () => {
+    expect(() =>
+      parsePattern({ ...validPattern, targets: { "claude-code": { strategy: "captured" } } }),
+    ).toThrow(/capture block/);
+  });
+
+  it("rejects a declarative target with an empty or missing map", () => {
+    expect(() =>
+      parsePattern({ ...validPattern, targets: { "claude-code": { strategy: "declarative", map: [] } } }),
+    ).toThrow(/non-empty map/);
+    expect(() =>
+      parsePattern({ ...validPattern, targets: { "claude-code": { strategy: "declarative" } } }),
+    ).toThrow(/non-empty map/);
   });
 
   it("accepts an optional livecheck override block", () => {
@@ -106,7 +120,6 @@ describe("validate", () => {
       fragments: [
         {
           id: "gsd-core#hook-0001",
-          target: "settings.json",
           mergeInto: "hooks",
           op: { type: "hook", event: "PreToolUse", matcher: "Write|Edit", command: { type: "command", command: "node x.js" } },
           valueSha: sha256OfValue({ type: "command", command: "node x.js" }),
