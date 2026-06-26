@@ -13,7 +13,6 @@ function emptyConfig(path = "/x/settings.json"): ParsedConfig {
 function hookFrag(id: string, event: string, matcher: string | undefined, command: unknown): MergeFragment {
   return {
     id,
-    target: "settings.json",
     mergeInto: "hooks",
     op: { type: "hook", event, matcher, command },
     valueSha: sha256OfValue(command),
@@ -23,7 +22,6 @@ function hookFrag(id: string, event: string, matcher: string | undefined, comman
 function mcpFrag(id: string, name: string, value: unknown): MergeFragment {
   return {
     id,
-    target: "mcp.json",
     mergeInto: "mcpServers",
     op: { type: "mcpServer", name, value },
     valueSha: sha256OfValue(value),

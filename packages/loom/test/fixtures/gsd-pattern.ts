@@ -15,7 +15,6 @@ export const gsdPattern: HarnessPattern = {
   keywords: ["gsd", "spec", "planning", "workflow"],
   source: { type: "npm", package: "@opengsd/gsd-core" },
   versioning: { strategy: "semver", track: "latest" },
-  namespace: { mode: "as-is" },
   targets: {
     "claude-code": {
       strategy: "declarative",

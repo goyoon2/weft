@@ -5,18 +5,19 @@ import { sha256OfBytes, sha256OfFile, sha256OfValue, substitutePlaceholders } fr
 import type {
   AppliedFragment,
   MergeFragment,
-  PayloadEntry,
   PlacedFile,
   PlacedPayload,
+  PlacedPayloadEntry,
   Receipt,
   Sha256,
+  ShadowRecord,
 } from "@weft/schema";
 import type { CliAdapter } from "@weft/adapters";
 import { Transaction } from "./tx";
 import { resolveCtx, stateDirs } from "./paths";
 import type { WeftEnv } from "./paths";
 import { substituteDeep } from "./subst";
-import type { ExecutionPlan, PlannedFile } from "./plan";
+import type { ExecutionPlan, PlannedFile, PlannedPayloadFile } from "./plan";
 
 export interface ApplyResult {
   receipt: Receipt;
@@ -68,12 +69,28 @@ function writePlaced(
 function placePlannedFile(tx: Transaction, pf: PlannedFile, vars: Record<string, string>): PlacedFile {
   let shadowed: PlacedFile["shadowed"];
   if (pf.shadow) {
-    mkdirSync(dirname(pf.shadow.backupPath), { recursive: true });
-    writeFileSync(pf.shadow.backupPath, readFileSync(pf.destAbs));
+    // Back up the pre-existing foreign file THROUGH the tx so a rollback removes the backup too (and
+    // a commit keeps it) — the backup is no longer an un-journaled write orphaned on failure.
+    tx.writeFileAtomic(pf.shadow.backupPath, readFileSync(pf.destAbs));
     shadowed = pf.shadow;
   }
   const sha = writePlaced(tx, pf.srcAbs, pf.destAbs, pf.expectedSrcSha, pf.rewriteContent, vars);
   return { slot: pf.artifact.slot, absPath: pf.destAbs, sha, shadowed, renamedFrom: pf.renamedFrom };
+}
+
+/** Place one payload file, honoring its shadow exactly like {@link placePlannedFile} does for files. */
+function placePayloadFile(
+  tx: Transaction,
+  f: PlannedPayloadFile,
+  vars: Record<string, string>,
+): PlacedPayloadEntry {
+  let shadowed: ShadowRecord | undefined;
+  if (f.shadow) {
+    tx.writeFileAtomic(f.shadow.backupPath, readFileSync(f.destAbs));
+    shadowed = f.shadow;
+  }
+  const sha = writePlaced(tx, f.srcAbs, f.destAbs, f.expectedSrcSha, undefined, vars);
+  return { rel: f.rel, sha, shadowed };
 }
 
 function substituteFragment(frag: MergeFragment, vars: Record<string, string>): MergeFragment {
@@ -96,8 +113,10 @@ function assertConfigsWritable(adapter: CliAdapter, targets: string[]): void {
   }
 }
 
-function pruneEmptyDirs(dirs: Iterable<string>, env: WeftEnv): void {
-  const boundaries = new Set([env.home, resolveCtx(env).projectRoot, "/"]);
+function pruneEmptyDirs(dirs: Iterable<string>, env: WeftEnv, projectRoot?: string): void {
+  // Stop the upward walk at the install's OWN project root (the receipt's), not the current cwd —
+  // an `upgrade --all` / uninstall run from a different folder must not prune another project's tree.
+  const boundaries = new Set([env.home, projectRoot ?? resolveCtx(env).projectRoot, "/"]);
   // Expand to every ancestor up to a boundary, then remove empties deepest-first to a fixpoint
   // (a parent only becomes empty once all its now-removed children are gone).
   const candidates = new Set<string>();
@@ -281,10 +300,7 @@ export async function installPlan(env: WeftEnv, adapter: CliAdapter, plan: Execu
     const placedPayloads: PlacedPayload[] = plan.payloads.map((pp) => ({
       id: pp.id,
       baseAbs: pp.baseAbs,
-      entries: pp.files.map((f) => ({
-        rel: f.rel,
-        sha: writePlaced(tx, f.srcAbs, f.destAbs, f.expectedSrcSha, undefined, vars),
-      })),
+      entries: pp.files.map((f) => placePayloadFile(tx, f, vars)),
     }));
 
     const appliedFragments: AppliedFragment[] = [];
@@ -396,8 +412,12 @@ export async function uninstallReceipt(
         const abs = join(pp.baseAbs, entry.rel);
         if (!existsSync(abs)) continue;
         if ((await sha256OfFile(abs)) === entry.sha) {
-          tx.removeFile(abs);
-          toPrune.add(dirname(abs));
+          if (entry.shadowed && existsSync(entry.shadowed.backupPath)) {
+            tx.writeFileAtomic(abs, readFileSync(entry.shadowed.backupPath));
+          } else {
+            tx.removeFile(abs);
+            toPrune.add(dirname(abs));
+          }
         } else {
           conflicts.push(abs);
           warnings.push(`left modified payload file ${abs}`);
@@ -432,7 +452,7 @@ export async function uninstallReceipt(
     throw err;
   }
 
-  pruneEmptyDirs(toPrune, env);
+  pruneEmptyDirs(toPrune, env, receipt.projectPath);
   return { warnings, conflicts };
 }
 
@@ -516,18 +536,31 @@ export async function upgradeApply(
         placedFiles.push(prior);
         continue;
       }
-      placedFiles.push(placePlannedFile(tx, pf, vars));
+      const placed = placePlannedFile(tx, pf, vars);
+      // The path is now ours (managedBySelf), so this version's plan computes no shadow — carry the
+      // ORIGINAL backup pointer forward, or a later uninstall would delete the user's pre-existing
+      // file instead of restoring it.
+      if (!placed.shadowed && prior?.shadowed) placed.shadowed = prior.shadowed;
+      placedFiles.push(placed);
     }
 
     // Payloads: same delta, per entry.
     const newPayloadAbs = new Set(newPlan.payloads.flatMap((pp) => pp.files.map((f) => f.destAbs)));
+    const oldPayloadByAbs = new Map<string, PlacedPayloadEntry>();
+    for (const pp of oldReceipt.placedPayloads) {
+      for (const entry of pp.entries) oldPayloadByAbs.set(join(pp.baseAbs, entry.rel), entry);
+    }
     for (const pp of oldReceipt.placedPayloads) {
       for (const entry of pp.entries) {
         const abs = join(pp.baseAbs, entry.rel);
         if (newPayloadAbs.has(abs) || !existsSync(abs)) continue;
         if ((await sha256OfFile(abs)) === entry.sha) {
-          tx.removeFile(abs);
-          toPrune.add(dirname(abs));
+          if (entry.shadowed && existsSync(entry.shadowed.backupPath)) {
+            tx.writeFileAtomic(abs, readFileSync(entry.shadowed.backupPath));
+          } else {
+            tx.removeFile(abs);
+            toPrune.add(dirname(abs));
+          }
         } else {
           conflicts.push(abs);
         }
@@ -537,10 +570,15 @@ export async function upgradeApply(
     const placedPayloads: PlacedPayload[] = newPlan.payloads.map((pp) => ({
       id: pp.id,
       baseAbs: pp.baseAbs,
-      entries: pp.files.map<PayloadEntry>((f) => ({
-        rel: f.rel,
-        sha: writePlaced(tx, f.srcAbs, f.destAbs, f.expectedSrcSha, undefined, vars),
-      })),
+      entries: pp.files.map<PlacedPayloadEntry>((f) => {
+        const placed = placePayloadFile(tx, f, vars);
+        // Carry forward a prior foreign-file backup pointer (same reasoning as files above).
+        if (!placed.shadowed) {
+          const prior = oldPayloadByAbs.get(f.destAbs);
+          if (prior?.shadowed) placed.shadowed = prior.shadowed;
+        }
+        return placed;
+      }),
     }));
 
     const receipt: Receipt = {
@@ -568,7 +606,7 @@ export async function upgradeApply(
     tx.writeFileAtomic(receiptPath(env, receipt.receiptId), `${JSON.stringify(receipt, null, 2)}\n`);
 
     await tx.commit();
-    pruneEmptyDirs(toPrune, env);
+    pruneEmptyDirs(toPrune, env, oldReceipt.projectPath);
     return { receipt, warnings, conflicts };
   } catch (err) {
     await tx.rollback();

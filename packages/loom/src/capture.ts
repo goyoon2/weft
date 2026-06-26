@@ -46,10 +46,13 @@ export interface CapturedBuild {
 }
 
 /**
- * Build one spool by running the harness's own installer in a sandbox and snapshotting its
- * output. The whole config tree becomes a single payload rooted at the CLI's config dir
- * (`baseRel: ""`), so the existing payload-placement + `{{WEFT_PAYLOAD_DIR}}` resolution path
- * installs it verbatim. The only rewrite is generic: the absolute sandbox config path the
+ * Build one spool by running the harness's own installer against a throwaway, redirected HOME and
+ * snapshotting its output. NOTE: this is build-time HOME/XDG **redirection** (a temp HOME plus XDG
+ * bases pinned inside it), NOT a security sandbox — the child inherits the build machine's network,
+ * filesystem, and `process.env`, so this strategy runs only for patterns the mill operator has
+ * reviewed and chosen to build. The whole config tree becomes a single payload rooted at the CLI's
+ * config dir (`baseRel: ""`), so the existing payload-placement + `{{WEFT_PAYLOAD_DIR}}` resolution
+ * path installs it verbatim. The only rewrite is generic: the absolute sandbox config path the
  * installer baked into its files is turned back into `{{WEFT_PAYLOAD_DIR}}`.
  */
 export function buildCapturedSpoolForTarget(args: {
@@ -64,7 +67,7 @@ export function buildCapturedSpoolForTarget(args: {
   const { harnessId, pkg, capture, cli, scope, version, stagingDir } = args;
   const notes: string[] = [];
 
-  // ── 1. run the upstream installer in a throwaway, fully-isolated sandbox ──
+  // ── 1. run the upstream installer against a throwaway, redirected HOME (build-time, not a sandbox) ──
   const sandbox = mkdtempSync(join(tmpdir(), `weft-capture-${harnessId}-`));
   const scopeFlag = scope === "global" ? "--global" : "--local";
   const cmd = capture.installCmd

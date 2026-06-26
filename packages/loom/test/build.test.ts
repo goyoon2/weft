@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { sha256OfFile } from "@weft/schema";
 import type { Spool } from "@weft/schema";
+import { parsePattern } from "@weft/schema";
 import { buildHarness } from "../src/index";
 import { gsdFixtureDir, gsdPattern } from "./fixtures/gsd-pattern";
 
@@ -87,5 +88,40 @@ describe("loom buildHarness (gsd-core fixture)", () => {
     const out2 = mkdtempSync(join(tmpdir(), "weft-mill-test2-"));
     const again = await buildHarness(gsdPattern, { outDir: out2, sourceDir: gsdFixtureDir });
     expect(globalSpool(again.spools).archiveSha).toBe(globalSpool((await resultP).spools).archiveSha);
+  });
+});
+
+describe("loom build-time guards", () => {
+  const buildOut = (): string => mkdtempSync(join(tmpdir(), "weft-guard-"));
+
+  it("rejects a transform that introduces a placeholder the client can't resolve", async () => {
+    const bad = parsePattern({
+      ...gsdPattern,
+      targets: {
+        "claude-code": {
+          strategy: "declarative",
+          map: [{ kind: "agent", from: "agents/*.md", as: "agent:${name}" }],
+          transforms: [{ type: "substitute-var", appliesTo: "agents/**", from: "X", to: "{{WEFT_HOME}}" }],
+        },
+      },
+    });
+    await expect(buildHarness(bad, { outDir: buildOut(), sourceDir: gsdFixtureDir })).rejects.toThrow(
+      /unresolvable placeholder/,
+    );
+  });
+
+  it("rejects a slot name that escapes its install root (path traversal at the source)", async () => {
+    const bad = parsePattern({
+      ...gsdPattern,
+      targets: {
+        "claude-code": {
+          strategy: "declarative",
+          map: [{ kind: "command", from: "commands/gsd/*.md", as: "command:../../../evil-${name}" }],
+        },
+      },
+    });
+    await expect(buildHarness(bad, { outDir: buildOut(), sourceDir: gsdFixtureDir })).rejects.toThrow(
+      /escapes its slot root|relative path/,
+    );
   });
 });

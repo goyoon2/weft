@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { parsePattern } from "@weft/schema";
-import type { CliId, HarnessPattern, Index, IndexEntry, SpoolRef } from "@weft/schema";
+import type { HarnessPattern, Index, IndexEntry, SpoolRef } from "@weft/schema";
 import { buildHarness } from "./build";
 
 export interface BuildMillResult {
@@ -53,7 +53,10 @@ export async function buildIndexEntry(pattern: HarnessPattern, opts: { outDir: s
     homepage: pattern.homepage,
     keywords: pattern.keywords ?? [],
     latest: result.version,
-    clis: Object.keys(pattern.targets) as CliId[],
+    // Advertise only the CLIs that actually produced a spool (in build order), not every declared
+    // target — a target that built nothing (e.g. an unsupported scope, or a misconfig) must not
+    // appear in the catalog as installable.
+    clis: [...new Set(result.spools.map((s) => s.cli))],
     versions: [{ version: result.version, spools }],
   };
 
