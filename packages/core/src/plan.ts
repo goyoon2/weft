@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { sha256OfFile } from "@weft/schema";
+import { isAbsolute, join, resolve, sep } from "node:path";
+import { isResolvablePlaceholder, RESOLVABLE_PLACEHOLDERS, sha256OfFile } from "@weft/schema";
 import type { CliId, FileArtifact, MergeFragment, Scope, Sha256, Spool } from "@weft/schema";
 import type { CliAdapter, ResolveCtx } from "@weft/adapters";
 import { readAllReceipts } from "./receipts";
@@ -75,6 +75,23 @@ function fillTokens(s: string, tok: Record<string, string>): string {
   return s.replace(/\{(\w+)\}/g, (m, k: string) => (k in tok ? (tok[k] ?? m) : m));
 }
 
+/**
+ * Join a spool-supplied relative path onto a trusted root, refusing anything that escapes it. Spool
+ * `destRel`/`baseRel`/`rel`/`archivePath` are author-influenced (a community pattern mints them) and a
+ * sha-pin only proves the client fetched the same bytes — NOT that the path is safe. So every place a
+ * spool path is joined onto a real directory is contained here: an absolute path, or one that resolves
+ * outside `root`, throws instead of writing (or reading) outside the slot.
+ */
+function safeJoin(root: string, rel: string): string {
+  if (isAbsolute(rel)) throw new Error(`weft: refusing spool path "${rel}" (absolute path)`);
+  const base = resolve(root);
+  const abs = resolve(base, rel);
+  if (abs !== base && !abs.startsWith(base + sep)) {
+    throw new Error(`weft: refusing spool path "${rel}" — it escapes ${base}`);
+  }
+  return abs;
+}
+
 export interface BuildPlanArgs {
   env: WeftEnv;
   ctx: ResolveCtx;
@@ -91,12 +108,15 @@ export interface BuildPlanArgs {
 function resolvePlaceholders(spool: Spool, adapter: CliAdapter, scope: Scope, ctx: ResolveCtx): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of spool.placeholders) {
+    if (!isResolvablePlaceholder(name)) {
+      throw new Error(
+        `weft: unsupported spool placeholder {{${name}}} (resolvable: ${RESOLVABLE_PLACEHOLDERS.join(", ")})`,
+      );
+    }
     if (name === "WEFT_PAYLOAD_DIR") {
       const payload = spool.payloads[0];
       if (!payload) throw new Error(`weft: spool declares {{WEFT_PAYLOAD_DIR}} but ships no payload`);
-      out[name] = join(adapter.payloadBase(scope, ctx), payload.baseRel);
-    } else {
-      throw new Error(`weft: unsupported spool placeholder {{${name}}}`);
+      out[name] = safeJoin(adapter.payloadBase(scope, ctx), payload.baseRel);
     }
   }
   return out;
@@ -125,10 +145,11 @@ export async function buildPlan(args: BuildPlanArgs): Promise<ExecutionPlan> {
   const resolvedPlaceholders = resolvePlaceholders(spool, adapter, scope, ctx);
 
   // A foreign file (exists, not ours, not another harness's tracked file) gets backed up & restored
-  // on uninstall. Our own prior-version files are overwritten in place (no shadow).
+  // on uninstall. Our own prior-version files are overwritten in place (no shadow). The backup path
+  // is contained too, so a hostile destRel/rel can't redirect a backup write outside the backups dir.
   const shadowFor = async (destAbs: string, sub: string): Promise<ShadowPlan | undefined> => {
     if (!existsSync(destAbs) || managedByOther.has(destAbs) || managedBySelf.has(destAbs)) return undefined;
-    return { backupPath: join(backupsRoot, sub), originalSha: await sha256OfFile(destAbs) };
+    return { backupPath: safeJoin(backupsRoot, sub), originalSha: await sha256OfFile(destAbs) };
   };
 
   const files: PlannedFile[] = [];
@@ -138,21 +159,21 @@ export async function buildPlan(args: BuildPlanArgs): Promise<ExecutionPlan> {
     let rewriteContent: ((c: string) => string) | undefined;
     let renamedFrom: string | undefined;
 
-    let destAbs = join(adapter.slotRoot(artifact.slot, scope, ctx), artifact.destRel);
+    let destAbs = safeJoin(adapter.slotRoot(artifact.slot, scope, ctx), artifact.destRel);
     const owner = managedByOther.get(destAbs);
     if (owner) {
       const ns = adapter.applyNamespace(artifact, spool.harness);
       artifact = ns.artifact;
       rewriteContent = ns.rewriteContent;
       renamedFrom = ns.renamedFrom;
-      destAbs = join(adapter.slotRoot(artifact.slot, scope, ctx), artifact.destRel);
+      destAbs = safeJoin(adapter.slotRoot(artifact.slot, scope, ctx), artifact.destRel);
       collisions++;
       notes.push(`namespaced ${renamedFrom} → ${artifact.destRel} (collides with ${owner})`);
     }
 
     files.push({
       artifact,
-      srcAbs: join(fetchedDir, original.archivePath),
+      srcAbs: safeJoin(fetchedDir, original.archivePath),
       destAbs,
       expectedSrcSha: original.sha,
       rewriteContent,
@@ -163,13 +184,13 @@ export async function buildPlan(args: BuildPlanArgs): Promise<ExecutionPlan> {
 
   const payloads: PlannedPayload[] = [];
   for (const pa of spool.payloads) {
-    const baseAbs = join(adapter.payloadBase(scope, ctx), pa.baseRel);
+    const baseAbs = safeJoin(adapter.payloadBase(scope, ctx), pa.baseRel);
     const planned: PlannedPayloadFile[] = [];
     for (const entry of pa.entries) {
-      const destAbs = join(baseAbs, entry.rel);
+      const destAbs = safeJoin(baseAbs, entry.rel);
       planned.push({
         rel: entry.rel,
-        srcAbs: join(fetchedDir, pa.archiveDir, entry.rel),
+        srcAbs: safeJoin(fetchedDir, join(pa.archiveDir, entry.rel)),
         destAbs,
         expectedSrcSha: entry.sha,
         shadow: await shadowFor(destAbs, join("payloads", pa.id, entry.rel)),

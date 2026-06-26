@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extract as tarExtract } from "tar";
@@ -19,44 +19,53 @@ function toLocalPath(url: string): string | undefined {
 }
 
 /** Resolve a spool ref to a local `.tgz` path: a `file://`/local path as-is, or download an http one. */
-async function resolveArchivePath(ref: SpoolRef, cacheDir: string): Promise<string> {
+async function resolveArchivePath(
+  ref: SpoolRef,
+  cacheDir: string,
+): Promise<{ srcPath: string; downloadedDir?: string }> {
   const local = toLocalPath(ref.url);
   if (local !== undefined) {
     if (!existsSync(local)) throw new Error(`weft: spool archive not found at ${local}`);
-    return local;
+    return { srcPath: local };
   }
   // Hosted spool: download to a temp file, then the same hash-verify + extract path runs over it.
   const res = await fetch(ref.url, { headers: ghHeaders(ref.url) });
   if (!res.ok) throw new Error(`weft: GET ${ref.url} → ${res.status} ${res.statusText}`);
   mkdirSync(cacheDir, { recursive: true });
-  const dl = join(mkdtempSync(join(cacheDir, "dl-")), "spool.tgz");
+  const downloadedDir = mkdtempSync(join(cacheDir, "dl-"));
+  const dl = join(downloadedDir, "spool.tgz");
   writeFileSync(dl, Buffer.from(await res.arrayBuffer()));
-  return dl;
+  return { srcPath: dl, downloadedDir };
 }
 
 /**
  * Resolve (download for http, or read a local `file://`), integrity-check, and extract a spool.
- * Verifies the archive hash and the embedded spool.json hash against the index ref.
+ * Verifies the archive hash and the embedded spool.json hash against the index ref. The downloaded
+ * `.tgz` temp is always removed (even on a verification failure); the caller owns the returned
+ * extraction `dir` and is responsible for deleting it once the install/upgrade has read from it.
  */
 export async function fetchSpool(ref: SpoolRef, cacheDir: string): Promise<FetchedSpool> {
-  const srcPath = await resolveArchivePath(ref, cacheDir);
+  const { srcPath, downloadedDir } = await resolveArchivePath(ref, cacheDir);
+  try {
+    const archiveSha = await sha256OfFile(srcPath);
+    if (archiveSha !== ref.spoolSha) {
+      throw new Error(`weft: spool hash mismatch for ${ref.url}\n  expected ${ref.spoolSha}\n  got      ${archiveSha}`);
+    }
 
-  const archiveSha = await sha256OfFile(srcPath);
-  if (archiveSha !== ref.spoolSha) {
-    throw new Error(`weft: spool hash mismatch for ${ref.url}\n  expected ${ref.spoolSha}\n  got      ${archiveSha}`);
-  }
+    mkdirSync(cacheDir, { recursive: true });
+    const dir = mkdtempSync(join(cacheDir, "spool-"));
+    await tarExtract({ file: srcPath, cwd: dir });
 
-  mkdirSync(cacheDir, { recursive: true });
-  const dir = mkdtempSync(join(cacheDir, "spool-"));
-  await tarExtract({ file: srcPath, cwd: dir });
-
-  const spoolJsonPath = join(dir, "spool.json");
-  if (!existsSync(spoolJsonPath)) {
-    throw new Error(`weft: spool archive ${ref.url} is missing spool.json`);
+    const spoolJsonPath = join(dir, "spool.json");
+    if (!existsSync(spoolJsonPath)) {
+      throw new Error(`weft: spool archive ${ref.url} is missing spool.json`);
+    }
+    const raw = readFileSync(spoolJsonPath);
+    if (sha256OfBytes(raw) !== ref.spoolJsonSha) {
+      throw new Error(`weft: spool.json hash mismatch for ${ref.url}`);
+    }
+    return { spool: parseSpool(JSON.parse(raw.toString("utf8"))), dir };
+  } finally {
+    if (downloadedDir) rmSync(downloadedDir, { recursive: true, force: true });
   }
-  const raw = readFileSync(spoolJsonPath);
-  if (sha256OfBytes(raw) !== ref.spoolJsonSha) {
-    throw new Error(`weft: spool.json hash mismatch for ${ref.url}`);
-  }
-  return { spool: parseSpool(JSON.parse(raw.toString("utf8"))), dir };
 }

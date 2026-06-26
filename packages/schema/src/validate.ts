@@ -6,7 +6,7 @@ const cliId = z.enum(["claude-code", "codex", "gemini", "cursor", "opencode"]);
 const scope = z.enum(["global", "local"]);
 const slotKind = z.enum(["skill", "agent", "command", "hook", "mcp-server", "payload"]);
 const mergeInto = z.enum(["hooks", "mcpServers"]);
-const mergeTarget = z.enum(["settings.json", "mcp.json", "claude.json-user"]);
+const shadowRecord = z.object({ backupPath: z.string(), originalSha: sha256 });
 
 // ── pattern ──
 const sourceSpec = z.discriminatedUnion("type", [
@@ -84,10 +84,20 @@ const targetBuildSpec = z
     delegate: delegateSpec.optional(),
     transforms: z.array(transformRule).optional(),
   })
-  // A delegated target must carry its recipe; declarative/captured must not.
+  // Each strategy must carry the block it builds from — caught at parse time (the `brew audit`
+  // analogue) so a misconfigured target can't silently produce no spool while the index still
+  // advertises the CLI.
   .refine((t) => t.strategy !== "delegated" || !!t.delegate, {
     message: "delegated strategy requires a delegate block",
     path: ["delegate"],
+  })
+  .refine((t) => t.strategy !== "captured" || !!t.capture, {
+    message: "captured strategy requires a capture block",
+    path: ["capture"],
+  })
+  .refine((t) => t.strategy !== "declarative" || (Array.isArray(t.map) && t.map.length > 0), {
+    message: "declarative strategy requires a non-empty map",
+    path: ["map"],
   });
 
 const patternSchema = z.object({
@@ -104,9 +114,6 @@ const patternSchema = z.object({
     strategy: z.literal("semver"),
     track: z.enum(["latest", "tagged"]).optional(),
   }),
-  namespace: z
-    .object({ mode: z.enum(["as-is", "prefix"]), prefix: z.string().optional() })
-    .optional(),
   livecheck: livecheckSpec.optional(),
   targets: z.record(cliId, targetBuildSpec),
 });
@@ -178,7 +185,6 @@ const spoolSchema = z.object({
   fragments: z.array(
     z.object({
       id: z.string(),
-      target: mergeTarget,
       mergeInto,
       op: mergeOp,
       valueSha: sha256,
@@ -224,12 +230,16 @@ const receiptSchema = z.object({
       slot: slotKind,
       absPath: z.string(),
       sha: sha256,
-      shadowed: z.object({ backupPath: z.string(), originalSha: sha256 }).optional(),
+      shadowed: shadowRecord.optional(),
       renamedFrom: z.string().optional(),
     }),
   ),
   placedPayloads: z.array(
-    z.object({ id: z.string(), baseAbs: z.string(), entries: z.array(payloadEntry) }),
+    z.object({
+      id: z.string(),
+      baseAbs: z.string(),
+      entries: z.array(payloadEntry.extend({ shadowed: shadowRecord.optional() })),
+    }),
   ),
   appliedFragments: z.array(
     z.object({

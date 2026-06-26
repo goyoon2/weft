@@ -62,7 +62,6 @@ describe("mcp merge per config format", () => {
   const server = { command: "npx", args: ["-y", "@x/mcp"] };
   const mcpFrag: MergeFragment = {
     id: "m1",
-    target: "mcp.json",
     mergeInto: "mcpServers",
     op: { type: "mcpServer", name: "ctx7", value: server },
     valueSha: sha256OfValue(server),

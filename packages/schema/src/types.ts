@@ -127,11 +127,6 @@ export interface TargetBuildSpec {
   transforms?: TransformRule[];
 }
 
-export interface NamespaceSpec {
-  mode: "as-is" | "prefix";
-  prefix?: string;
-}
-
 /** How `resolveUpstreamVersion` discovers the newest upstream version (the strategy keys mirror Homebrew livecheck strategies). */
 export type LivecheckStrategy =
   /** Read a dist-tag (default `latest`) from the npm registry — metadata only, no tarball. */
@@ -190,7 +185,6 @@ export interface HarnessPattern {
   keywords?: string[];
   source: SourceSpec;
   versioning: { strategy: "semver"; track?: "latest" | "tagged" };
-  namespace?: NamespaceSpec;
   /** How to observe upstream version drift. Optional — derived from `source` when omitted. */
   livecheck?: LivecheckSpec;
   /** Presence of a CLI key declares support for that CLI. */
@@ -268,12 +262,9 @@ export type MergeOp =
   | { type: "mcpServer"; name: string; value: unknown }
   | { type: "hook"; event: string; matcher?: string; command: unknown };
 
-export type MergeTarget = "settings.json" | "mcp.json" | "claude.json-user";
-
 export interface MergeFragment {
   /** Stable provenance id, e.g. `"gsd-core#hook-0007"`. */
   id: string;
-  target: MergeTarget;
   mergeInto: MergeInto;
   op: MergeOp;
   /** Canonical hash of the inserted value, for verify-before-remove. */
@@ -336,10 +327,16 @@ export interface PlacedFile {
   renamedFrom?: string;
 }
 
+/** A payload entry as recorded in a receipt: like {@link PayloadEntry}, plus the foreign-file backup. */
+export interface PlacedPayloadEntry extends PayloadEntry {
+  /** Present if this payload file overwrote a pre-existing foreign file (backed up for restore on uninstall). */
+  shadowed?: ShadowRecord;
+}
+
 export interface PlacedPayload {
   id: string;
   baseAbs: string;
-  entries: PayloadEntry[];
+  entries: PlacedPayloadEntry[];
 }
 
 export type FragmentLocator =
