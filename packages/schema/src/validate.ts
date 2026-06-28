@@ -23,6 +23,7 @@ const slotMapRule = z.object({
   kind: slotKind,
   from: z.string().min(1),
   as: z.string().min(1),
+  exclude: z.array(z.string().min(1)).optional(),
   mergeInto: mergeInto.optional(),
 });
 
