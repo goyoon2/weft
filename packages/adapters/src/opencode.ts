@@ -1,8 +1,16 @@
 import { join } from "node:path";
 import type { AppliedFragment, FileArtifact, MergeFragment, MergeInto, Scope, SlotKind } from "@weft/schema";
 import { readJsonConfig, serializeJsonConfig } from "./json-config";
-import { applyNamespace, artifactIdentity, mergeMcpUnder, unmergeMcpUnder } from "./shared";
-import type { CliAdapter, MergeResult, NamespacedArtifact, ParsedConfig, ResolveCtx, UnmergeResult } from "./types";
+import { applyNamespace, artifactIdentity, decomposeMcpUnder, mergeMcpUnder, unmergeMcpUnder } from "./shared";
+import type {
+  CliAdapter,
+  DecomposedConfig,
+  MergeResult,
+  NamespacedArtifact,
+  ParsedConfig,
+  ResolveCtx,
+  UnmergeResult,
+} from "./types";
 
 // File-slot root: ~/.config/opencode (global) or <projectRoot>/.opencode (project).
 function opencodeDir(scope: Scope, ctx: ResolveCtx): string {
@@ -60,6 +68,10 @@ export const opencodeAdapter: CliAdapter = {
   },
   unmergeFragment(cfg: ParsedConfig, applied: AppliedFragment): UnmergeResult {
     return unmergeMcpUnder(cfg, applied, "mcp");
+  },
+  decomposeConfig(data: Record<string, unknown>, mergeInto: MergeInto): DecomposedConfig {
+    // OpenCode hooks are JS plugins, not mergeable config; only opencode.json's `mcp` map decomposes.
+    return mergeInto === "mcpServers" ? decomposeMcpUnder(data, "mcp") : { ops: [], consumedKeys: [] };
   },
 
   artifactIdentity(art: FileArtifact): string {

@@ -1,11 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { absolutizeIndexSpools, absolutizeIndexSpoolsAgainstUrl, parseIndex } from "@weft/schema";
 import type { Index } from "@weft/schema";
+import { bundledIndexSnapshot } from "./bundled";
 import { ghHeaders } from "./http";
 import { stateDirs } from "./paths";
 import type { WeftEnv } from "./paths";
+
+/**
+ * How long a network-fetched catalog cache stays "fresh" before `maybeAutoUpdate` refreshes it from
+ * the live mill. A snapshot-seeded cache is backdated to be immediately stale, so the first online
+ * command pulls the current catalog. Set `WEFT_NO_AUTO_UPDATE` to disable background refresh.
+ */
+export const AUTO_UPDATE_TTL_MS = 12 * 60 * 60 * 1000;
+const AUTO_UPDATE_TIMEOUT_MS = 4000;
 
 function isHttp(source: string): boolean {
   return source.startsWith("http://") || source.startsWith("https://");
@@ -53,14 +62,63 @@ function pullIndexLocal(env: WeftEnv): Index {
  * resolved against the index's own url, so they download from alongside it (e.g. the same repo via
  * raw.githubusercontent.com). Integrity is still enforced per-spool by `fetchSpool` (sha256).
  */
-async function pullIndexRemote(env: WeftEnv): Promise<Index> {
+async function pullIndexRemote(env: WeftEnv, signal?: AbortSignal): Promise<Index> {
   const url = env.millIndexSource;
-  const res = await fetch(url, { headers: ghHeaders(url) });
+  const res = await fetch(url, { headers: ghHeaders(url), signal });
   if (!res.ok) {
     throw new Error(`weft update: GET ${url} → ${res.status} ${res.statusText}`);
   }
   const index = absolutizeIndexSpoolsAgainstUrl(parseIndex(await res.json()), url);
   return cacheIndex(env, index);
+}
+
+/**
+ * Seed the cache from the catalog snapshot bundled in the npm package, so a fresh install can show
+ * `weft catalog` instantly and offline before any `weft update`. Spool urls (relative in the
+ * snapshot) are absolutized against the live mill index url, identical to a real remote pull. The
+ * cache is backdated so `maybeAutoUpdate` treats it as stale and refreshes from the mill when online.
+ * Returns the seeded index, or `undefined` if no snapshot is bundled.
+ */
+function seedFromBundledSnapshot(env: WeftEnv): Index | undefined {
+  const snapshot = bundledIndexSnapshot();
+  if (!snapshot) return undefined;
+  const index = cacheIndex(env, absolutizeIndexSpoolsAgainstUrl(snapshot, env.millIndexSource));
+  try {
+    utimesSync(stateDirs(env).indexCache, 0, 0);
+  } catch {
+    // Best-effort: if the backdate fails the snapshot is just treated as fresh for the TTL.
+  }
+  return index;
+}
+
+/** Age of the cached catalog in ms, or `Infinity` if there is no cache. */
+function cacheAgeMs(env: WeftEnv): number {
+  try {
+    return Date.now() - statSync(stateDirs(env).indexCache).mtimeMs;
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * Best-effort catalog refresh for a HOSTED mill: if the cache is missing or older than the TTL, pull
+ * the current index from the mill. Network/offline failures are swallowed — the caller falls back to
+ * the cached or bundled snapshot. No-op for local/dev sources (those are driven by explicit
+ * `weft update`) and when `WEFT_NO_AUTO_UPDATE` is set. Safe to call before any catalog read.
+ */
+export async function maybeAutoUpdate(env: WeftEnv): Promise<void> {
+  if (!isHttp(env.millIndexSource)) return;
+  if (process.env.WEFT_NO_AUTO_UPDATE) return;
+  if (cacheAgeMs(env) < AUTO_UPDATE_TTL_MS) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), AUTO_UPDATE_TIMEOUT_MS);
+  try {
+    await pullIndexRemote(env, ctrl.signal);
+  } catch {
+    // Offline, timed out, or transient: keep whatever cache/snapshot we have.
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Pull the catalog from the mill source into the local cache (network for `http(s)` sources). */
@@ -76,6 +134,8 @@ export function ensureIndex(env: WeftEnv): Index {
   const cached = loadCachedIndex(env);
   if (cached) return cached;
   if (isHttp(env.millIndexSource)) {
+    const seeded = seedFromBundledSnapshot(env);
+    if (seeded) return seeded;
     throw new Error("weft: no catalog cached yet — run `weft update` first.");
   }
   return pullIndexLocal(env);

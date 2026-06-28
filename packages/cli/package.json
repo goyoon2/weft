@@ -1,20 +1,28 @@
 {
   "name": "@goyoon/weft",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A Homebrew-style package manager for AI-tool harnesses (skills, agents, commands, hooks, MCP servers).",
+  "keywords": ["ai", "claude-code", "codex", "gemini", "cursor", "opencode", "skills", "agents", "package-manager", "cli"],
+  "homepage": "https://github.com/goyoon2/weft#readme",
+  "bugs": "https://github.com/goyoon2/weft/issues",
+  "repository": { "type": "git", "url": "git+https://github.com/goyoon2/weft.git", "directory": "packages/cli" },
+  "license": "MIT",
   "type": "module",
-  "private": true,
-  "main": "./src/index.ts",
-  "exports": {
-    ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
+  "bin": { "weft": "dist/weft.cjs" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=22" },
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "snapshot:refresh": "WEFT_SNAPSHOT_SRC=https://raw.githubusercontent.com/goyoon2/weft-mill/main/index.json node ../core/scripts/refresh-snapshot.mjs",
+    "build": "tsup",
+    "prepublishOnly": "npm run snapshot:refresh && npm run build"
   },
-  "dependencies": {
+  "devDependencies": {
     "@weft/adapters": "workspace:*",
     "@weft/core": "workspace:*",
+    "@weft/loom": "workspace:*",
     "@weft/schema": "workspace:*",
     "@clack/prompts": "^0.8.2",
     "commander": "^12.1.0"
-  },
-  "devDependencies": {
-    "@weft/loom": "workspace:*"
   }
 }

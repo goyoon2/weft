@@ -1,6 +1,6 @@
 import { sha256OfValue } from "@weft/schema";
-import type { AppliedFragment, FileArtifact, MergeFragment } from "@weft/schema";
-import type { MergeResult, NamespacedArtifact, ParsedConfig, UnmergeResult } from "./types";
+import type { AppliedFragment, FileArtifact, MergeFragment, MergeOp } from "@weft/schema";
+import type { DecomposedConfig, MergeResult, NamespacedArtifact, ParsedConfig, UnmergeResult } from "./types";
 
 // ───────────────────────────── JSON object helpers ─────────────────────────────
 
@@ -70,6 +70,18 @@ export function unmergeMcpUnder(cfg: ParsedConfig, applied: AppliedFragment, map
   return { removed: true, conflict: false, warnings };
 }
 
+/**
+ * Build-time inverse of {@link mergeMcpUnder}: pull every server in `data[mapKey]` out as an
+ * `mcpServer` op, so a captured config's server map becomes individually-mergeable fragments
+ * instead of an opaque file that would overwrite the user's.
+ */
+export function decomposeMcpUnder(data: Record<string, unknown>, mapKey: string): DecomposedConfig {
+  const servers = asObject(data[mapKey]);
+  if (!servers) return { ops: [], consumedKeys: [] };
+  const ops: MergeOp[] = Object.entries(servers).map(([name, value]) => ({ type: "mcpServer", name, value }));
+  return { ops, consumedKeys: ops.length ? [mapKey] : [] };
+}
+
 // ───────────────────────────── Grouped hooks ─────────────────────────────
 // The Claude/Codex/Gemini shape: hooks.<Event> = [ { matcher?, hooks: [ <command> ] } ].
 // Provenance is per-command (a group's matcher is not unique), so we remove by value hash.
@@ -130,6 +142,29 @@ export function unmergeGroupedHook(cfg: ParsedConfig, applied: AppliedFragment):
   if (eventArr.length === 0) delete hooks[event];
   if (Object.keys(hooks).length === 0) delete cfg.data.hooks;
   return { removed: true, conflict: false, warnings };
+}
+
+/**
+ * Build-time inverse of {@link mergeGroupedHook}: flatten `data.hooks.<event>[].hooks[]` into one
+ * `hook` op per command (carrying its event + matcher), so a captured config's hooks become
+ * individually-removable fragments instead of an opaque file that would overwrite the user's.
+ */
+export function decomposeGroupedHooks(data: Record<string, unknown>): DecomposedConfig {
+  const hooks = asObject(data.hooks);
+  if (!hooks) return { ops: [], consumedKeys: [] };
+  const ops: MergeOp[] = [];
+  for (const [event, groupsRaw] of Object.entries(hooks)) {
+    const groups = asArray(groupsRaw);
+    if (!groups) continue;
+    for (const groupRaw of groups) {
+      const group = asObject(groupRaw);
+      const commands = group && asArray(group.hooks);
+      if (!commands) continue;
+      const matcher = normMatcher(group.matcher);
+      for (const command of commands) ops.push({ type: "hook", event, matcher, command });
+    }
+  }
+  return { ops, consumedKeys: ops.length ? ["hooks"] : [] };
 }
 
 // ───────────────────────────── identity & namespacing ─────────────────────────────

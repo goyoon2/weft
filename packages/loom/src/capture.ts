@@ -6,14 +6,18 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { sha256OfBytes, sha256OfValue } from "@weft/schema";
+import { getAdapter } from "@weft/adapters";
 import type {
   CaptureSpec,
   CliId,
+  MergeFragment,
+  MergeInto,
   PayloadArtifact,
   PayloadEntry,
   Scope,
@@ -66,6 +70,7 @@ export function buildCapturedSpoolForTarget(args: {
 }): CapturedBuild {
   const { harnessId, pkg, capture, cli, scope, version, stagingDir } = args;
   const notes: string[] = [];
+  const adapter = getAdapter(cli);
 
   // ── 1. run the upstream installer against a throwaway, redirected HOME (build-time, not a sandbox) ──
   const sandbox = mkdtempSync(join(tmpdir(), `weft-capture-${harnessId}-`));
@@ -162,6 +167,28 @@ export function buildCapturedSpoolForTarget(args: {
     return out;
   };
 
+  // ── shared-config decomposition setup ──
+  // A captured CLI config that lives INSIDE the snapshot (Claude's settings.json, Codex's
+  // config.toml, …) must NOT be placed as an opaque payload file — that overwrites the user's real
+  // config on install. Decompose each into merge fragments instead. The file's location comes from
+  // the SAME adapter logic the runtime uses, so a map whose file resolves OUTSIDE the captured dir
+  // (e.g. Claude's global mcp in ~/.claude.json) simply isn't in the snapshot, and is skipped here.
+  const configMaps = new Map<string, MergeInto[]>();
+  for (const mergeInto of ["mcpServers", "hooks"] as MergeInto[]) {
+    let cfgAbs: string;
+    try {
+      cfgAbs = adapter.configFilePath(mergeInto, scope, { home: sandbox, projectRoot: sandbox });
+    } catch {
+      continue; // this CLI keeps no mergeable file for this map (e.g. cursor/opencode hooks)
+    }
+    const rel = relative(configRaw, cfgAbs);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) continue; // lives outside the captured dir
+    const list = configMaps.get(rel) ?? [];
+    list.push(mergeInto);
+    configMaps.set(rel, list);
+  }
+  const parseTmp = mkdtempSync(join(tmpdir(), `weft-decompose-${harnessId}-`));
+
   // ── 3. snapshot every file into one root payload, re-localizing the install path ──
   const write = (archivePath: string, data: Buffer | string): void => {
     const abs = join(stagingDir, archivePath);
@@ -187,29 +214,85 @@ export function buildCapturedSpoolForTarget(args: {
   addRoot(homedir());
   for (const n of nodePaths) addRoot(dirname(n));
 
+  const fragments: MergeFragment[] = [];
+  const unmergedKeys = new Map<string, string[]>(); // captured config rel → keys weft can't merge
+  let hookSeq = 0;
+  let mcpSeq = 0;
+
+  // Re-localize a non-binary file's text into a portable copy, flagging any surviving machine path.
+  const localize = (rel: string, buf: Buffer): string => {
+    const text = templatize(buf.toString("utf8"));
+    if (text.includes(PAYLOAD_PLACEHOLDER)) usedPlaceholder = true;
+    for (const root of leakRoots) {
+      if (text.includes(root)) {
+        leaks.add(rel);
+        break;
+      }
+    }
+    return text;
+  };
+
   for (const rel of walkRel(configReal, configReal).sort()) {
     const buf = readFileSync(join(configReal, rel));
-    let data: Buffer | string;
-    if (buf.includes(0)) {
-      data = buf; // binary: verbatim
-    } else {
-      const original = buf.toString("utf8");
-      const text = templatize(original);
-      if (text.includes(PAYLOAD_PLACEHOLDER)) usedPlaceholder = true;
-      // Any surviving machine-specific path means the spool isn't portable to other machines.
-      for (const root of leakRoots) {
-        if (text.includes(root)) {
-          leaks.add(rel);
-          break;
+    const maps = configMaps.get(rel);
+
+    // ── shared-config file → decompose into merge fragments; never place it as a payload file ──
+    if (maps && !buf.includes(0)) {
+      const text = localize(rel, buf);
+      const stage = join(parseTmp, rel);
+      mkdirSync(dirname(stage), { recursive: true });
+      writeFileSync(stage, text);
+      const cfg = adapter.readConfig(stage);
+      if (cfg.unparsable) {
+        // Can't safely decompose; place it (status quo) rather than silently dropping the config.
+        notes.push(`${cli}/${scope}: captured ${rel} isn't parseable — placed as-is (may overwrite a user's ${rel})`);
+        entries.push({ rel, sha: sha256OfBytes(text) });
+        write(`${archiveDir}/${rel}`, text);
+        continue;
+      }
+      const consumed = new Set<string>();
+      for (const mergeInto of maps) {
+        const { ops, consumedKeys } = adapter.decomposeConfig(cfg.data, mergeInto);
+        for (const k of consumedKeys) consumed.add(k);
+        for (const op of ops) {
+          fragments.push(
+            op.type === "hook"
+              ? {
+                  id: `${harnessId}#hook-${String(hookSeq++).padStart(4, "0")}`,
+                  mergeInto: "hooks",
+                  op,
+                  valueSha: sha256OfValue(op.command),
+                }
+              : {
+                  id: `${harnessId}#mcp-${String(mcpSeq++).padStart(4, "0")}`,
+                  mergeInto: "mcpServers",
+                  op,
+                  valueSha: sha256OfValue(op.value),
+                },
+          );
         }
       }
-      data = text;
+      const leftover = Object.keys(cfg.data).filter((k) => !consumed.has(k));
+      if (leftover.length) unmergedKeys.set(rel, leftover);
+      continue;
     }
+
+    // ── ordinary captured file → payload entry (binary verbatim, text re-localized) ──
+    const data: Buffer | string = buf.includes(0) ? buf : localize(rel, buf);
     entries.push({ rel, sha: sha256OfBytes(data) });
     write(`${archiveDir}/${rel}`, data);
   }
+  rmSync(parseTmp, { recursive: true, force: true });
 
-  if (entries.length === 0) {
+  // Keys in a captured shared-config that weft can't merge (e.g. gsd's settings.json `statusLine` /
+  // `permissions`) are intentionally NOT applied — the user's own config keeps them. Surface, never drop silently.
+  for (const [rel, keys] of unmergedKeys) {
+    notes.push(
+      `${cli}/${scope}: captured ${rel} also set ${keys.sort().join(", ")} which weft does not merge — ` +
+        `not applied (the user's ${rel} keeps its own)`,
+    );
+  }
+  if (entries.length === 0 && fragments.length === 0) {
     notes.push(`${cli}/${scope}: captured install produced no files`);
   }
   if (leaks.size > 0) {
@@ -257,7 +340,7 @@ export function buildCapturedSpoolForTarget(args: {
     builtAt: new Date().toISOString(),
     files: [],
     payloads: [payload],
-    fragments: [],
+    fragments,
     placeholders: usedPlaceholder ? ["WEFT_PAYLOAD_DIR"] : [],
     archiveSha,
   };

@@ -11,12 +11,20 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "weft": "tsx packages/cli/bin/weft.ts"
+    "weft": "tsx packages/cli/bin/weft.ts",
+    "snapshot:refresh": "pnpm --filter @weft/core run snapshot:refresh",
+    "build": "pnpm --filter @goyoon/weft run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^3.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
