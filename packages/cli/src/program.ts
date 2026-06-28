@@ -17,7 +17,7 @@ import {
 import type { DelegateConsent, DelegateConsentInfo, InstallResult, UninstallResult } from "@weft/core";
 import { promptDelegateConsent, promptInstallTargets, promptUninstallTargets } from "./prompts";
 import { renderCatalog, renderInfo, renderList, renderPlan, renderSearch, renderUpdate } from "./render";
-import { badge, c, sym } from "./theme";
+import { banner, c, sym } from "./theme";
 
 const VERSION = "0.1.0";
 
@@ -119,7 +119,7 @@ export function buildProgram(): Command {
 
   program.addHelpText(
     "before",
-    () => `\n  ${badge("weft", "magenta")}  ${c.dim("A Homebrew-style package manager for AI-tool harnesses.")}\n`,
+    () => `\n${banner()}\n\n  ${c.dim("A Homebrew-style package manager for AI-tool harnesses.")}\n`,
   );
   program.addHelpText("after", () =>
     [
