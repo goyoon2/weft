@@ -17,7 +17,7 @@ Fill in the sections below.
 
 ## Affected packages
 
-- [ ] `@goyoon/weft` (CLI)
+- [ ] `@symploke-ai/weft` (CLI)
 - [ ] `@weft/core` (resolve / plan / place / merge / receipts / ops)
 - [ ] `@weft/adapters` (CliAdapter seam + per-CLI adapters)
 - [ ] `@weft/loom` (pattern → spool builder)

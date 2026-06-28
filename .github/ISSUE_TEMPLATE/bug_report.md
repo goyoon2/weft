@@ -44,7 +44,7 @@ Paste the failing output. For an install/upgrade/uninstall bug, the receipt unde
 
 ## Which area (best guess, optional)
 
-- [ ] CLI / UX (`@goyoon/weft`)
+- [ ] CLI / UX (`@symploke-ai/weft`)
 - [ ] resolve / plan / place / merge / receipts (`@weft/core`)
 - [ ] a CLI adapter — path mapping, config merge (`@weft/adapters`)
 - [ ] spool building from a pattern (`@weft/loom`)

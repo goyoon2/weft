@@ -1,10 +1,10 @@
-# @goyoon/weft
+# @symploke-ai/weft
 
 A Homebrew-style package manager for AI-tool **harnesses** — bundles of skills, agents, commands,
 hooks, and MCP servers for AI coding CLIs (Claude Code, Codex, Gemini, Cursor, opencode).
 
 ```sh
-npm install -g @goyoon/weft
+npm install -g @symploke-ai/weft
 
 weft catalog              # browse every harness in the catalog (works instantly, offline)
 weft search planner       # find harnesses (typo-tolerant)

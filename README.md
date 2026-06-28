@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@goyoon/weft"><img alt="npm" src="https://img.shields.io/npm/v/%40goyoon%2Fweft?color=cb3837&logo=npm&label=%40goyoon%2Fweft"></a>
+  <a href="https://www.npmjs.com/package/@symploke-ai/weft"><img alt="npm" src="https://img.shields.io/npm/v/%40symploke-ai%2Fweft?color=cb3837&logo=npm&label=%40symploke-ai%2Fweft"></a>
   <a href="https://github.com/goyoon2/weft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/goyoon2/weft/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/%40goyoon%2Fweft?color=blue"></a>
-  <img alt="node" src="https://img.shields.io/node/v/%40goyoon%2Fweft?color=339933&logo=nodedotjs&label=node">
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/%40symploke-ai%2Fweft?color=blue"></a>
+  <img alt="node" src="https://img.shields.io/node/v/%40symploke-ai%2Fweft?color=339933&logo=nodedotjs&label=node">
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@ it, and weft drops verified files into the right place for **Claude Code, Codex,
 opencode** — then `uninstall` and `upgrade` are exact, because every install is tracked.
 
 ```sh
-npm install -g @goyoon/weft
+npm install -g @symploke-ai/weft
 weft install gsd-core
 ```
 
@@ -67,9 +67,9 @@ instant you install it — offline, no config — then auto-refresh in the backg
 ## Install
 
 ```sh
-npm install -g @goyoon/weft
+npm install -g @symploke-ai/weft
 # or run without installing:
-npx @goyoon/weft search planner
+npx @symploke-ai/weft search planner
 ```
 
 Requires **Node ≥ 22**.
@@ -210,7 +210,7 @@ This repo is a pnpm workspace:
 | `@weft/adapters` | the `CliAdapter` seam + per-CLI adapters (Claude Code, Codex, Gemini, Cursor, opencode) |
 | `@weft/loom` | the spool builder (`pattern` → `spool`) |
 | `@weft/core` | resolve, plan, transactional place/merge, receipts, ops |
-| `@goyoon/weft` | the `weft` CLI |
+| `@symploke-ai/weft` | the `weft` CLI |
 
 ```sh
 pnpm install

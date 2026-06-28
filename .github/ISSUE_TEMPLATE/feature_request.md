@@ -21,7 +21,7 @@ AI CLI, that's a new adapter — use this template.
 
 ## Which area
 
-- [ ] CLI / UX (`@goyoon/weft`)
+- [ ] CLI / UX (`@symploke-ai/weft`)
 - [ ] resolve / plan / place / merge / receipts (`@weft/core`)
 - [ ] new or changed CLI adapter (`@weft/adapters`)
 - [ ] spool building / pattern features (`@weft/loom`)

@@ -2,7 +2,7 @@ import { defineConfig } from "tsup";
 
 // Bundle the CLI + all of its workspace and npm dependencies into ONE self-contained ESM file with
 // a node shebang. The published package then has zero runtime deps (`@weft/*`, commander, clack, zod
-// are all inlined), so `npm install -g @goyoon/weft` is a single fast download that just works. The
+// are all inlined), so `npm install -g @symploke-ai/weft` is a single fast download that just works. The
 // catalog snapshot (core/snapshot/index.json) is imported as JSON and inlined here too.
 export default defineConfig({
   entry: { weft: "bin/weft.ts" },

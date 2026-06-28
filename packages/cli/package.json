@@ -1,5 +1,5 @@
 {
-  "name": "@goyoon/weft",
+  "name": "@symploke-ai/weft",
   "version": "0.1.0",
   "description": "A Homebrew-style package manager for AI-tool harnesses (skills, agents, commands, hooks, MCP servers).",
   "keywords": ["ai", "claude-code", "codex", "gemini", "cursor", "opencode", "skills", "agents", "package-manager", "cli"],
