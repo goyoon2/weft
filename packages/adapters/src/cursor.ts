@@ -1,8 +1,16 @@
 import { join } from "node:path";
 import type { AppliedFragment, FileArtifact, MergeFragment, MergeInto, Scope, SlotKind } from "@weft/schema";
 import { readJsonConfig, serializeJsonConfig } from "./json-config";
-import { applyNamespace, artifactIdentity, mergeMcpUnder, unmergeMcpUnder } from "./shared";
-import type { CliAdapter, MergeResult, NamespacedArtifact, ParsedConfig, ResolveCtx, UnmergeResult } from "./types";
+import { applyNamespace, artifactIdentity, decomposeMcpUnder, mergeMcpUnder, unmergeMcpUnder } from "./shared";
+import type {
+  CliAdapter,
+  DecomposedConfig,
+  MergeResult,
+  NamespacedArtifact,
+  ParsedConfig,
+  ResolveCtx,
+  UnmergeResult,
+} from "./types";
 
 function cursorRoot(scope: Scope, ctx: ResolveCtx): string {
   return scope === "global" ? join(ctx.home, ".cursor") : join(ctx.projectRoot, ".cursor");
@@ -53,6 +61,10 @@ export const cursorAdapter: CliAdapter = {
   },
   unmergeFragment(cfg: ParsedConfig, applied: AppliedFragment): UnmergeResult {
     return unmergeMcpUnder(cfg, applied, "mcpServers");
+  },
+  decomposeConfig(data: Record<string, unknown>, mergeInto: MergeInto): DecomposedConfig {
+    // Cursor hooks use a different flat shape weft doesn't merge; only mcp.json decomposes.
+    return mergeInto === "mcpServers" ? decomposeMcpUnder(data, "mcpServers") : { ops: [], consumedKeys: [] };
   },
 
   artifactIdentity(art: FileArtifact): string {

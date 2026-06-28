@@ -6,15 +6,34 @@ import { readJsonConfig, serializeJsonConfig } from "./json-config";
 import {
   applyNamespace,
   artifactIdentity,
+  decomposeGroupedHooks,
+  decomposeMcpUnder,
   mergeGroupedHook,
   mergeMcpUnder,
   unmergeGroupedHook,
   unmergeMcpUnder,
 } from "./shared";
-import type { CliAdapter, MergeResult, NamespacedArtifact, ParsedConfig, ResolveCtx, UnmergeResult } from "./types";
+import type {
+  CliAdapter,
+  DecomposedConfig,
+  MergeResult,
+  NamespacedArtifact,
+  ParsedConfig,
+  ResolveCtx,
+  UnmergeResult,
+} from "./types";
 
 function codexRoot(scope: Scope, ctx: ResolveCtx): string {
   return scope === "global" ? join(ctx.home, ".codex") : join(ctx.projectRoot, ".codex");
+}
+
+/** A `#` comment outside string literals. smol-toml drops these on reserialize (it isn't
+ *  comment-preserving), so weft flags the file lossy and warns before normalizing the user's config.toml. */
+function tomlHasComments(text: string): boolean {
+  return text.split("\n").some((line) => {
+    const stripped = line.replace(/"[^"]*"/g, "").replace(/'[^']*'/g, "");
+    return stripped.includes("#");
+  });
 }
 
 function readTomlConfig(absPath: string): ParsedConfig {
@@ -28,7 +47,13 @@ function readTomlConfig(absPath: string): ParsedConfig {
     throw err;
   }
   try {
-    return { path: absPath, data: parseToml(text) as Record<string, unknown>, existed: true, unparsable: false };
+    return {
+      path: absPath,
+      data: parseToml(text) as Record<string, unknown>,
+      existed: true,
+      unparsable: false,
+      lossyReserialize: tomlHasComments(text),
+    };
   } catch {
     return { path: absPath, data: {}, existed: true, unparsable: true };
   }
@@ -79,6 +104,9 @@ export const codexAdapter: CliAdapter = {
     return applied.locator.kind === "mcpServer"
       ? unmergeMcpUnder(cfg, applied, "mcp_servers")
       : unmergeGroupedHook(cfg, applied);
+  },
+  decomposeConfig(data: Record<string, unknown>, mergeInto: MergeInto): DecomposedConfig {
+    return mergeInto === "hooks" ? decomposeGroupedHooks(data) : decomposeMcpUnder(data, "mcp_servers");
   },
 
   artifactIdentity(art: FileArtifact): string {

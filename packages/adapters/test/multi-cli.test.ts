@@ -99,3 +99,44 @@ describe("mcp merge per config format", () => {
     expect((cfg.data.mcpServers as Record<string, unknown>).ctx7).toEqual(server);
   });
 });
+
+// The build-time inverse: pull fragments back OUT of a captured config so the loom can merge them
+// into the user's real file instead of overwriting it. Each CLI reads its own map key; keys it can't
+// merge are reported (consumedKeys) so the caller surfaces the unmerged remainder.
+describe("decomposeConfig per CLI (inverse of merge)", () => {
+  const server = { command: "npx", args: ["-y", "@x/mcp"] };
+
+  it("claude-code: hooks → one op per command, carrying event + matcher", () => {
+    const data = {
+      hooks: { PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "a" }, { type: "command", command: "b" }] }] },
+      statusLine: { x: 1 },
+    };
+    const { ops, consumedKeys } = getAdapter("claude-code").decomposeConfig(data, "hooks");
+    expect(ops).toHaveLength(2);
+    expect(ops[0]).toMatchObject({ type: "hook", event: "PreToolUse", matcher: "Write" });
+    expect(consumedKeys).toEqual(["hooks"]); // statusLine is left for the caller to report
+  });
+
+  it("gemini: settings.json holds BOTH maps — each decomposes independently", () => {
+    const data = {
+      mcpServers: { ctx7: { command: "npx" } },
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "s" }] }] },
+      telemetry: { enabled: false },
+    };
+    expect(geminiAdapter.decomposeConfig(data, "mcpServers")).toEqual({
+      ops: [{ type: "mcpServer", name: "ctx7", value: { command: "npx" } }],
+      consumedKeys: ["mcpServers"],
+    });
+    expect(geminiAdapter.decomposeConfig(data, "hooks").ops).toHaveLength(1);
+  });
+
+  it("codex reads mcp from snake_case mcp_servers; opencode from `mcp`; both ignore hooks-less maps", () => {
+    expect(codexAdapter.decomposeConfig({ mcp_servers: { ctx7: server }, model: "gpt-5" }, "mcpServers").ops).toEqual([
+      { type: "mcpServer", name: "ctx7", value: server },
+    ]);
+    expect(opencodeAdapter.decomposeConfig({ mcp: { ctx7: server } }, "mcpServers").ops).toHaveLength(1);
+    // opencode/cursor don't merge hooks (JS plugins / flat shape) → no ops, nothing consumed
+    expect(opencodeAdapter.decomposeConfig({ hooks: {} }, "hooks")).toEqual({ ops: [], consumedKeys: [] });
+    expect(cursorAdapter.decomposeConfig({ hooks: {} }, "hooks")).toEqual({ ops: [], consumedKeys: [] });
+  });
+});

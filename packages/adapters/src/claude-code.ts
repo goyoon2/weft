@@ -4,12 +4,22 @@ import { readJsonConfig, serializeJsonConfig } from "./json-config";
 import {
   applyNamespace,
   artifactIdentity,
+  decomposeGroupedHooks,
+  decomposeMcpUnder,
   mergeGroupedHook,
   mergeMcpUnder,
   unmergeGroupedHook,
   unmergeMcpUnder,
 } from "./shared";
-import type { CliAdapter, MergeResult, NamespacedArtifact, ParsedConfig, ResolveCtx, UnmergeResult } from "./types";
+import type {
+  CliAdapter,
+  DecomposedConfig,
+  MergeResult,
+  NamespacedArtifact,
+  ParsedConfig,
+  ResolveCtx,
+  UnmergeResult,
+} from "./types";
 
 function claudeRoot(scope: Scope, ctx: ResolveCtx): string {
   return scope === "global" ? join(ctx.home, ".claude") : join(ctx.projectRoot, ".claude");
@@ -56,6 +66,9 @@ export const claudeCodeAdapter: CliAdapter = {
     return applied.locator.kind === "mcpServer"
       ? unmergeMcpUnder(cfg, applied, "mcpServers")
       : unmergeGroupedHook(cfg, applied);
+  },
+  decomposeConfig(data: Record<string, unknown>, mergeInto: MergeInto): DecomposedConfig {
+    return mergeInto === "hooks" ? decomposeGroupedHooks(data) : decomposeMcpUnder(data, "mcpServers");
   },
 
   artifactIdentity(art: FileArtifact): string {

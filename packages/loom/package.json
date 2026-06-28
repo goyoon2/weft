@@ -8,6 +8,7 @@
     ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
   },
   "dependencies": {
+    "@weft/adapters": "workspace:*",
     "@weft/schema": "workspace:*",
     "semver": "^7.6.3",
     "tar": "^7.4.3",

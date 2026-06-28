@@ -38,6 +38,11 @@ function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> {
 
 const dedupe = (items: string[]): string[] => [...new Set(items)];
 
+/** A note pushed when weft must rewrite a config its parser can't round-trip (TOML comments via
+ *  smol-toml). JSON/JSONC preserves comments, so this only ever fires for Codex's config.toml. */
+const lossyWarn = (path: string): string =>
+  `note: ${path} has comments/formatting weft can't preserve; it was normalized on write`;
+
 function transformForPlacement(
   content: Buffer,
   rewrite: ((c: string) => string) | undefined,
@@ -306,6 +311,7 @@ export async function installPlan(env: WeftEnv, adapter: CliAdapter, plan: Execu
     const appliedFragments: AppliedFragment[] = [];
     for (const [targetAbs, frags] of groupBy(plan.fragments, (f) => f.targetAbs)) {
       const cfg = adapter.readConfig(targetAbs);
+      if (cfg.lossyReserialize) warnings.push(lossyWarn(targetAbs));
       for (const { fragment } of frags) {
         const sub = substituteFragment(fragment, vars);
         const res = adapter.mergeFragment(cfg, sub);
@@ -441,6 +447,7 @@ export async function uninstallReceipt(
         tx.removeFile(targetAbs);
         toPrune.add(dirname(targetAbs));
       } else {
+        if (cfg.lossyReserialize) warnings.push(lossyWarn(targetAbs));
         tx.writeFileAtomic(targetAbs, adapter.serializeConfig(cfg));
       }
     }
@@ -506,6 +513,7 @@ export async function upgradeApply(
         tx.removeFile(targetAbs);
         toPrune.add(dirname(targetAbs));
       } else {
+        if (cfg.lossyReserialize) warnings.push(lossyWarn(targetAbs));
         tx.writeFileAtomic(targetAbs, adapter.serializeConfig(cfg));
       }
     }
