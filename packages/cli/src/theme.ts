@@ -66,6 +66,17 @@ export function badge(text: string, variant: keyof typeof BG = "blue"): string {
 }
 
 /**
+ * A "tag" chip — bold WHITE text on a coloured background, padded a space each side. Like {@link
+ * badge} but white-on-colour (rather than black), for labels meant to read as crisp chips — e.g. the
+ * harnesses active in the current directory. Degrades to `[text]` when colour is off so piped output
+ * still reads sensibly.
+ */
+export function tag(text: string, variant: keyof typeof BG = "blue"): string {
+  if (!colorOn) return `[${text}]`;
+  return `\x1b[${BG[variant]}m\x1b[97m\x1b[1m ${text} \x1b[0m`;
+}
+
+/**
  * The "WEFT" wordmark in an ANSI-Shadow block font: solid `█` letter faces with a box-drawing
  * (╗╝╚═║…) drop shadow that gives the slab its depth.
  */

@@ -83,20 +83,23 @@ weft search planner          # find harnesses in the catalog (typo-tolerant)
 weft catalog                 # browse everything available (instant, offline)
 weft info gsd-core           # details + whether it's already installed
 
-weft install gsd-core        # pick CLI + scope, merge the pre-built files in
-weft list                    # what's installed, where
+weft install gsd-core anthropic-skills   # install several at once — one CLI + scope for all
+weft list                    # what's active here, then every install on this machine
 
 weft update                  # refresh the catalog from the mill (shows what changed)
 weft upgrade gsd-core        # move every install to a newer version
-weft uninstall gsd-core      # exact reverse of install — no leftovers
+weft uninstall gsd-core      # remove it — from here, another project, or global (asks which)
 ```
 
 `install` is interactive by default — it asks **which CLI** (Claude Code, Codex, …) and **which
-scope** (global or per-project), then shows you the plan. Scriptable too:
+scope** (global or per-project) once, then applies that to every harness you named and shows the
+plan. `uninstall` finds the harness wherever it lives — confirm a single match, or pick which
+directory's install to remove when there are several. Scriptable too:
 
 ```sh
 weft install gsd-core --cli claude-code --scope local --yes
 weft install gsd-core --dry-run            # show the plan, write nothing
+weft uninstall gsd-core --cli claude-code --scope global --yes   # no prompt
 weft catalog --json | jq '.[].id'          # every command speaks --json
 ```
 
@@ -177,11 +180,11 @@ weft borrows Homebrew's mental model:
 | `weft search <query>` | Find harnesses in the catalog (typo-tolerant) |
 | `weft catalog` | List every harness available in the mill |
 | `weft info <harness>` | Show details and install state for a harness |
-| `weft install <harness>` | Install a harness (asks which CLI + scope unless given) |
-| `weft list` | List installed harnesses (`--all` for every project) |
+| `weft install <harness…>` | Install one or more harnesses (asks which CLI + scope once, applies it to all) |
+| `weft list` | List harnesses — active in this directory, then every install on this machine |
 | `weft update` | Refresh the catalog from the mill (shows what changed) |
 | `weft upgrade <harness>` | Upgrade every install of a harness to the latest version |
-| `weft uninstall <harness>` | Remove a harness install — the exact reverse |
+| `weft uninstall <harness…>` | Remove one or more installs — from this directory, another project, or global (asks which) |
 
 Every command takes `--json` for scripting. Run `weft --help` or `weft <command> --help` for options.
 

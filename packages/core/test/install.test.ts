@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,8 @@ import {
   installHarness,
   listInstalled,
   searchOp,
+  uninstallByReceipt,
+  uninstallCandidates,
   uninstallHarness,
   updateIndex,
   upgradeAll,
@@ -336,6 +338,37 @@ describe("local scope keys by project realpath", () => {
     await uninstallHarness(env, { harness: "gsd-core", cli: "claude-code", scope: "local" });
     expect(existsSync(join(project, ".claude"))).toBe(false);
     expect(existsSync(project)).toBe(true); // project root itself preserved
+  });
+});
+
+describe("uninstall reaches installs in OTHER directories (and global)", () => {
+  it("surfaces every install machine-wide and removes a chosen one in place, leaving the rest", async () => {
+    const home = tmp("weft-home-xdir-");
+    const projA = tmp("weft-projA-xdir-");
+    const projB = tmp("weft-projB-xdir-");
+    const envA = makeEnv(home, projA, indexSource);
+    const envB = makeEnv(home, projB, indexSource);
+
+    // global + a local in projA + a local in projB — three installs, one shared home.
+    await installHarness(envA, { harness: "gsd-core", cli: "claude-code", scope: "global" });
+    await installHarness(envA, { harness: "gsd-core", cli: "claude-code", scope: "local" });
+    await installHarness(envB, { harness: "gsd-core", cli: "claude-code", scope: "local" });
+
+    // From projA's cwd, candidates surface ALL three (the cwd-scoped `listInstalled` would see only 2).
+    const all = uninstallCandidates(envA, { harness: "gsd-core" });
+    expect(all).toHaveLength(3);
+    expect(uninstallCandidates(envA, { harness: "gsd-core", scope: "global" })).toHaveLength(1);
+
+    // Remove projB's local install while sitting in projA — only it goes.
+    const projBReceipt = all.find((r) => r.scope === "local" && r.projectPath === realpathSync(projB));
+    expect(projBReceipt).toBeTruthy();
+    const res = await uninstallByReceipt(envA, projBReceipt!);
+    expect(res.status).toBe("uninstalled");
+
+    expect(existsSync(join(projB, ".claude"))).toBe(false); // the chosen one, in another dir, is gone
+    expect(existsSync(join(projA, ".claude"))).toBe(true); // the dir we ran from is untouched
+    expect(existsSync(join(home, ".claude"))).toBe(true); // global is untouched
+    expect(uninstallCandidates(envA, { harness: "gsd-core" })).toHaveLength(2);
   });
 });
 

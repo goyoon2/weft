@@ -292,19 +292,24 @@ function matchReceipts(
   return { matches, all };
 }
 
-export async function uninstallHarness(
-  env: WeftEnv,
-  opts: { harness: string; cli?: CliId; scope?: Scope; onDelegate?: DelegateConsent },
-): Promise<UninstallResult> {
-  const { matches, all } = matchReceipts(env, opts.harness, opts.cli, opts.scope);
-  if (matches.length === 0) return { status: "not-installed", elsewhere: all };
-  if (matches.length > 1) return { status: "ambiguous", candidates: matches };
-  const receipt = matches[0]!;
+export type UninstallReceiptResult =
+  | { status: "uninstalled"; warnings: string[]; conflicts: string[] }
+  | { status: "declined"; reason: string };
 
-  // Delegated (cask): removal runs the tool's own uninstaller — gate on consent, like install.
+/**
+ * Remove ONE specific receipt, wherever it lives — any project's local install or global, regardless
+ * of the current cwd (the receipt carries the absolute paths it placed). For `delegated` (cask)
+ * installs, removal runs the tool's own uninstaller, gated on the caller's consent like install.
+ * The selection of *which* receipt(s) is the caller's job — see {@link uninstallCandidates}.
+ */
+export async function uninstallByReceipt(
+  env: WeftEnv,
+  receipt: Receipt,
+  onDelegate?: DelegateConsent,
+): Promise<UninstallReceiptResult> {
   if (receipt.delegation) {
-    const granted = opts.onDelegate
-      ? await opts.onDelegate({
+    const granted = onDelegate
+      ? await onDelegate({
           action: "uninstall",
           harness: receipt.harness,
           cli: receipt.cli,
@@ -320,6 +325,40 @@ export async function uninstallHarness(
   }
 
   const res = await uninstallReceipt(env, getAdapter(receipt.cli), receipt);
+  return { status: "uninstalled", warnings: res.warnings, conflicts: res.conflicts };
+}
+
+/**
+ * Every install of a harness across the WHOLE machine — all projects' local installs plus global —
+ * narrowed by `cli`/`scope`. Sorted global-first, then by project path, for a stable selection UI.
+ * Unlike {@link uninstallHarness}'s cwd-scoped matching, this surfaces installs in other directories
+ * so they can be removed from anywhere.
+ */
+export function uninstallCandidates(
+  env: WeftEnv,
+  opts: { harness: string; cli?: CliId; scope?: Scope },
+): Receipt[] {
+  let receipts = findReceipts(env, { harness: opts.harness, cli: opts.cli });
+  if (opts.scope) receipts = receipts.filter((r) => r.scope === opts.scope);
+  return receipts.sort(
+    (a, b) =>
+      a.scope.localeCompare(b.scope) ||
+      (a.projectPath ?? "").localeCompare(b.projectPath ?? "") ||
+      a.cli.localeCompare(b.cli),
+  );
+}
+
+export async function uninstallHarness(
+  env: WeftEnv,
+  opts: { harness: string; cli?: CliId; scope?: Scope; onDelegate?: DelegateConsent },
+): Promise<UninstallResult> {
+  const { matches, all } = matchReceipts(env, opts.harness, opts.cli, opts.scope);
+  if (matches.length === 0) return { status: "not-installed", elsewhere: all };
+  if (matches.length > 1) return { status: "ambiguous", candidates: matches };
+  const receipt = matches[0]!;
+
+  const res = await uninstallByReceipt(env, receipt, opts.onDelegate);
+  if (res.status === "declined") return { status: "declined", reason: res.reason };
   return { status: "uninstalled", receipt, warnings: res.warnings, conflicts: res.conflicts };
 }
 
@@ -466,7 +505,11 @@ export function listInstalled(env: WeftEnv, opts: { all?: boolean } = {}): Recei
     ? receipts
     : receipts.filter((r) => r.scope === "global" || r.scopeKey === localKey);
   return filtered.sort(
-    (a, b) => a.harness.localeCompare(b.harness) || a.cli.localeCompare(b.cli) || a.scope.localeCompare(b.scope),
+    (a, b) =>
+      a.harness.localeCompare(b.harness) ||
+      a.cli.localeCompare(b.cli) ||
+      a.scope.localeCompare(b.scope) ||
+      (a.projectPath ?? "").localeCompare(b.projectPath ?? ""),
   );
 }
 

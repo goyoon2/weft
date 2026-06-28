@@ -84,7 +84,11 @@ describe("weft CLI e2e (subprocess)", () => {
     expect(existsSync(join(claude, "gsd-core", "hooks", "gsd-guard.js"))).toBe(true);
     expect(readFileSync(join(claude, "settings.json"), "utf8")).not.toContain("${CLAUDE_PLUGIN_ROOT}");
 
-    expect(weft(home, ["list"]).out).toContain("gsd-core");
+    const list = weft(home, ["list"]);
+    expect(list.out).toContain("gsd-core");
+    // the two stacked views: what's active here, then everything on the machine
+    expect(list.out).toContain("THIS DIRECTORY");
+    expect(list.out).toContain("EVERYWHERE");
 
     // catalog lists every available harness and marks this one installed
     const cat = weft(home, ["catalog"]);
@@ -94,6 +98,23 @@ describe("weft CLI e2e (subprocess)", () => {
     const un = weft(home, ["uninstall", "gsd-core", "--cli", "claude-code", "--scope", "global"]);
     expect(un.out).toContain("uninstalled");
     expect(existsSync(claude)).toBe(false);
+  });
+
+  it("installs several harnesses in one command, applying one CLI+scope to all and skipping unknown ids", () => {
+    const home = tmp("weft-e2e-home-");
+    weft(home, ["update"]);
+    // Two positional ids (one a typo) + one CLI/scope for the whole batch.
+    const ins = weft(home, ["install", "gsd-core", "no-such-harness", "--cli", "claude-code", "--scope", "global", "--yes"]);
+    expect(ins.code).toBe(0); // a typo'd id doesn't fail the batch when a real one installs
+    expect(ins.out).toContain("installed gsd-core");
+    expect(ins.out).toContain("no-such-harness"); // reported as skipped, not silently dropped
+    expect(existsSync(join(home, ".claude", "agents", "gsd-planner.md"))).toBe(true);
+
+    // uninstall is variadic too: one real id + one not-installed id, narrowed to the single install.
+    const un = weft(home, ["uninstall", "gsd-core", "no-such-harness", "--cli", "claude-code", "--scope", "global", "--yes"]);
+    expect(un.out).toContain("uninstalled gsd-core");
+    expect(un.out).toContain("not installed anywhere"); // for no-such-harness
+    expect(existsSync(join(home, ".claude"))).toBe(false); // gsd-core fully removed
   });
 
   it("--dry-run writes nothing", () => {
