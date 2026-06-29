@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Refresh the bundled catalog snapshot that ships in the npm package, so a fresh
-// `npm install -g @symploke-ai/weft` can show `weft catalog` instantly (offline, no `weft update`).
+// `npm install -g @weft-ai/weft` can show `weft catalog` instantly (offline, no `weft update`).
 //
 // Source of truth, in order of preference:
 //   1. WEFT_SNAPSHOT_SRC                          (explicit path or http(s) url)

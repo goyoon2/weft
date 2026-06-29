@@ -43,6 +43,13 @@ export interface SlotMapRule {
    * Examples: `"agent:${name}"`, `"command:gsd-${name}"`, `"payload:gsd-core"`, `"hook"`.
    */
   as: string;
+  /**
+   * Optional globs (relative to the fetched source root, matched against the same paths `from`
+   * yields) whose matches are dropped before mapping. Use to skip non-artifact files that live
+   * inside an artifact directory — e.g. the per-category `README.md` index files that ship next to
+   * real agent `.md` in an "awesome" collection, which would otherwise be mapped as junk agents.
+   */
+  exclude?: string[];
   /** For shared-file slots only. */
   mergeInto?: MergeInto;
 }

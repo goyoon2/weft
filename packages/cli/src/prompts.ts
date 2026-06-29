@@ -1,6 +1,7 @@
 import * as p from "@clack/prompts";
 import type { CellState, DelegateConsentInfo } from "@weft/core";
 import type { CliId, Receipt, Scope } from "@weft/schema";
+import { homeRelative } from "./render";
 
 export interface InstallTarget {
   cli: CliId;
@@ -8,16 +9,19 @@ export interface InstallTarget {
 }
 
 /**
- * Two-step install prompt: first pick the CLI(s) (multi-select), then the scope.
- * Already-installed `(cli, scope)` combinations are dropped from the result with a note.
- * Returns null if the user cancels.
+ * Two-step install prompt: first pick the CLI(s) (multi-select), then a single scope. The chosen
+ * `(cli, scope)` targets apply to EVERY harness in the request (`label` names them — one id, or
+ * "N harnesses"). `cells` is the union of what those harnesses can build; `installed` is true only
+ * where every requested harness already has it. Whether a given harness actually has a build for a
+ * target — and whether it's already installed — is reported per-harness at install time, so this
+ * returns every `(cli, chosenScope)` the union can build and never silently drops one. Null on cancel.
  */
-export async function promptInstallTargets(harness: string, cells: CellState[]): Promise<InstallTarget[] | null> {
+export async function promptInstallTargets(label: string, cells: CellState[]): Promise<InstallTarget[] | null> {
   const clis = [...new Set(cells.map((c) => c.cli))];
 
   // ── Step 1: which CLI(s) ──
   const cliChoice = await p.multiselect<CliId>({
-    message: `Install ${harness} for which CLI(s)?`,
+    message: `Install ${label} for which CLI(s)?`,
     options: clis.map((cli) => {
       const installedScopes = cells.filter((c) => c.cli === cli && c.installed).map((c) => c.scope);
       return {
@@ -57,18 +61,11 @@ export async function promptInstallTargets(harness: string, cells: CellState[]):
     scopeChoice = chosen;
   }
 
-  const targets: InstallTarget[] = [];
-  for (const cli of cliChoice) {
-    const cell = cells.find((c) => c.cli === cli && c.scope === scopeChoice);
-    if (!cell) {
-      p.note(`${cli} / ${scopeChoice} isn't available — skipping`);
-    } else if (cell.installed) {
-      p.note(`${cli} / ${scopeChoice} is already installed — skipping`);
-    } else {
-      targets.push({ cli, scope: scopeChoice });
-    }
-  }
-  return targets;
+  // Every (cli, chosenScope) the union can build. Per-harness availability / already-installed is the
+  // install step's job to report — so multiple harnesses with differing support each get a clear line.
+  return cliChoice
+    .filter((cli) => cells.some((c) => c.cli === cli && c.scope === scopeChoice))
+    .map((cli) => ({ cli, scope: scopeChoice }));
 }
 
 /**
@@ -95,24 +92,45 @@ export async function promptDelegateConsent(info: DelegateConsentInfo): Promise<
   return ok === true;
 }
 
-const targetKey = (r: { cli: CliId; scope: Scope }): string => `${r.cli}/${r.scope}`;
+/** Where an install lives, for the uninstall prompts: "global (all projects)" or its project dir. */
+function installLocation(r: Receipt, home: string): string {
+  return r.scope === "global" ? "global (all projects)" : homeRelative(r.projectPath ?? "this project", home);
+}
 
 /**
- * When an uninstall matches several installs in the current context, let the user multi-select
- * which (cli, scope) install(s) to remove — the symmetric counterpart to the install prompt.
- * (cli, scope) is unique among the candidates, so it doubles as the option key. Returns null on
- * cancel; an empty array if nothing was picked.
+ * Single-install uninstall: show exactly where it lives and ask y/N before removing. Returns false on
+ * cancel or "no" — the caller only proceeds on an explicit yes.
  */
-export async function promptUninstallTargets(harness: string, candidates: Receipt[]): Promise<InstallTarget[] | null> {
+export async function promptConfirmUninstall(harness: string, r: Receipt, home: string): Promise<boolean> {
+  const ok = await p.confirm({
+    message: `Uninstall ${harness} (${r.cli}) from ${installLocation(r, home)}?`,
+    initialValue: false,
+  });
+  if (p.isCancel(ok)) return false;
+  return ok === true;
+}
+
+/**
+ * When a harness is installed in several places (across projects + global), let the user multi-select
+ * which install(s) to remove, labelled by LOCATION so picking "which directory" is the point. Keyed
+ * by the unique `receiptId` (two local installs in different dirs share a cli/scope, so that can't be
+ * the key). Returns the chosen receipts; null on cancel; empty if nothing was picked.
+ */
+export async function promptUninstallTargets(
+  harness: string,
+  candidates: Receipt[],
+  home: string,
+): Promise<Receipt[] | null> {
+  const byId = new Map(candidates.map((r) => [r.receiptId, r]));
   const choice = await p.multiselect<string>({
     message: `Uninstall ${harness} from which install(s)?`,
     options: candidates.map((r) => ({
-      value: targetKey(r),
-      label: `${r.cli} / ${r.scope}`,
-      hint: r.scope === "global" ? "all projects" : (r.projectPath ?? "this project"),
+      value: r.receiptId,
+      label: installLocation(r, home),
+      hint: `${r.cli} · v${r.version}`,
     })),
     required: true,
   });
   if (p.isCancel(choice)) return null;
-  return candidates.filter((r) => choice.includes(targetKey(r))).map((r) => ({ cli: r.cli, scope: r.scope }));
+  return choice.map((id) => byId.get(id)).filter((r): r is Receipt => r !== undefined);
 }

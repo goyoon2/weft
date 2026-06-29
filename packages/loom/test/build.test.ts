@@ -91,6 +91,26 @@ describe("loom buildHarness (gsd-core fixture)", () => {
   });
 });
 
+describe("loom map-rule exclude", () => {
+  const buildOut = (): string => mkdtempSync(join(tmpdir(), "weft-exclude-"));
+
+  it("drops files matching a rule's exclude globs before mapping", async () => {
+    const pattern = parsePattern({
+      ...gsdPattern,
+      targets: {
+        "claude-code": {
+          strategy: "declarative",
+          map: [{ kind: "agent", from: "agents/*.md", as: "agent:${name}", exclude: ["agents/gsd-reviewer.md"] }],
+        },
+      },
+    });
+    const result = await buildHarness(pattern, { outDir: buildOut(), sourceDir: gsdFixtureDir });
+    const spool = globalSpool(result.spools);
+    const agents = spool.files.filter((f) => f.slot === "agent").map((f) => f.destRel).sort();
+    expect(agents).toEqual(["gsd-planner.md"]); // gsd-reviewer.md excluded
+  });
+});
+
 describe("loom build-time guards", () => {
   const buildOut = (): string => mkdtempSync(join(tmpdir(), "weft-guard-"));
 

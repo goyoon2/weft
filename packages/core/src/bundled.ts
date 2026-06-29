@@ -1,7 +1,7 @@
 import { parseIndex } from "@weft/schema";
 import type { Index } from "@weft/schema";
 // The catalog snapshot shipped in the npm package. Imported (not read from disk) so the bundler
-// inlines it into the single-file build — a fresh `npm install -g @symploke-ai/weft` then shows
+// inlines it into the single-file build — a fresh `npm install -g @weft-ai/weft` then shows
 // `weft catalog` instantly and offline, before any `weft update`. Refreshed at publish time by
 // scripts/refresh-snapshot.mjs. Spool urls stay RELATIVE here; callers absolutize them against the
 // live mill index url.

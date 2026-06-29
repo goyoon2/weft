@@ -172,6 +172,11 @@ function walkFiles(absDir: string, root: string): string[] {
   }
   const out: string[] = [];
   for (const entry of entries) {
+    // Never bundle a VCS metadata dir. A skill whose `SKILL.md` sits at the repo ROOT (common for
+    // single-skill repos) walks the whole fetched tree — which for a git source includes `.git/`.
+    // No artifact ever wants VCS internals shipped, so skip it defensively (the published npm/tarball
+    // paths never contain `.git`, so this only ever bites the git-clone path).
+    if (entry.name === ".git") continue;
     const abs = join(absDir, entry.name);
     if (entry.isDirectory()) out.push(...walkFiles(abs, root));
     else if (entry.isFile()) out.push(relative(root, abs));
@@ -193,6 +198,17 @@ function globFiles(pattern: string, root: string): string[] {
       }
     })
     .sort();
+}
+
+/**
+ * Files a `from` glob yields, minus anything matching one of the rule's `exclude` globs. Lets a map
+ * rule skip non-artifact files that live in an artifact directory (e.g. per-category `README.md`
+ * index files sitting next to real agent `.md`), which a glob alone can't express.
+ */
+function selectFiles(rule: SlotMapRule, root: string): string[] {
+  const matches = globFiles(rule.from, root);
+  if (!rule.exclude?.length) return matches;
+  return matches.filter((rel) => !rule.exclude?.some((ex) => matchGlob(ex, rel)));
 }
 
 // ───────────────────────────── per-target spool build ─────────────────────────────
@@ -230,13 +246,17 @@ function buildSpoolForTarget(args: {
       // file plus every sibling (reference docs, scripts, sub-dirs) so multi-file skills install
       // intact. The logical name comes from the captured skill-dir name; namespacing on collision
       // prefixes the whole dir, keeping a skill's files together.
-      const matches = globFiles(rule.from, sourceRoot);
+      const matches = selectFiles(rule, sourceRoot);
       if (matches.length === 0) notes.push(`${cli}/${scope}: rule "${rule.from}" matched no files`);
       for (const rel of matches) {
         const name = captureName(rule.from, rel);
         const logicalName = safeName(fillName(tmpl, name), `skill name (rule "${rule.as}")`);
         const skillDir = dirname(rel);
         for (const fileRel of walkFiles(join(sourceRoot, skillDir), sourceRoot)) {
+          // `exclude` also prunes the bundled tree (not just the SKILL.md match). Essential for a
+          // ROOT-level skill (skillDir = ".") so repo chrome — README/LICENSE/.github/CI — isn't
+          // shipped inside the skill; for a normal `skills/<name>/` dir it's usually unnecessary.
+          if (rule.exclude?.some((ex) => matchGlob(ex, fileRel))) continue;
           const destRel = `${logicalName}/${relative(skillDir, fileRel)}`;
           const archivePath = `files/skills/${destRel}`;
           const { data } = loadContent(join(sourceRoot, fileRel), fileRel, transforms);
@@ -248,7 +268,7 @@ function buildSpoolForTarget(args: {
     }
 
     if (rule.kind === "agent" || rule.kind === "command") {
-      const matches = globFiles(rule.from, sourceRoot);
+      const matches = selectFiles(rule, sourceRoot);
       if (matches.length === 0) notes.push(`${cli}/${scope}: rule "${rule.from}" matched no files`);
       for (const rel of matches) {
         const name = captureName(rule.from, rel);
@@ -272,7 +292,7 @@ function buildSpoolForTarget(args: {
     if (rule.kind === "payload") {
       const id = safeName(tmpl, `payload id (rule "${rule.as}")`);
       const existing = payloadMap.get(id) ?? { id, baseRel: id, archiveDir: `payloads/${id}`, entries: [] };
-      const matches = globFiles(rule.from, sourceRoot);
+      const matches = selectFiles(rule, sourceRoot);
       for (const rel of matches) {
         const { data } = loadContent(join(sourceRoot, rel), rel, transforms);
         const entry: PayloadEntry = { rel, sha: sha256OfBytes(data) };

@@ -1,6 +1,6 @@
 import type { IndexEntry, Receipt } from "@weft/schema";
 import type { CatalogDiff, CatalogItem, ExecutionPlan, SearchHit } from "@weft/core";
-import { badge, c, sym } from "./theme";
+import { badge, c, sym, tag } from "./theme";
 
 const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -137,36 +137,68 @@ export function renderUpdate(diff: CatalogDiff): string {
   return lines.join("\n");
 }
 
-export function renderList(receipts: Receipt[], home: string): string {
-  if (receipts.length === 0) {
-    return [
-      "",
-      `  ${sym.bullet} ${c.bold("Nothing installed yet.")}`,
-      "",
-      `  ${sym.arrow} ${c.dim("See what's available with")} ${c.cyan("weft catalog")}`,
-      "",
-    ].join("\n");
-  }
-  const rows = receipts.map((r) => [
+const LIST_HEADERS = ["HARNESS", "VERSION", "CLI", "SCOPE", "LOCATION"] as const;
+
+function receiptRow(r: Receipt, home: string): string[] {
+  return [
     r.harness,
     `v${r.version}`,
     r.cli,
     r.scope,
     r.scope === "global" ? "~" : homeRelative(r.projectPath ?? "(unknown)", home),
-  ]);
-  const headers = ["HARNESS", "VERSION", "CLI", "SCOPE", "LOCATION"];
-  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((row) => (row[i] ?? "").length)));
-  const headLine = "  " + headers.map((h, i) => c.dim(c.bold(h.padEnd(widths[i] ?? 0)))).join("  ");
-  const paint = (val: string, i: number): string => {
-    const padded = val.padEnd(widths[i] ?? 0);
-    if (i === 0) return c.cyan(c.bold(padded));
-    if (i === 1) return c.yellow(padded);
-    if (i === 2) return c.blue(padded);
-    if (i === 4) return c.dim(padded);
-    return padded;
-  };
-  const body = rows.map((row) => "  " + row.map(paint).join("  "));
-  return ["", headLine, ...body, ""].join("\n");
+  ];
+}
+
+function paintListCell(val: string, i: number, width: number): string {
+  const padded = val.padEnd(width);
+  if (i === 0) return c.cyan(c.bold(padded));
+  if (i === 1) return c.yellow(padded);
+  if (i === 2) return c.blue(padded);
+  if (i === 4) return c.dim(padded);
+  return padded;
+}
+
+/** A column-aligned table of receipts (HARNESS/VERSION/CLI/SCOPE/LOCATION), indented under a section. */
+function receiptTable(receipts: Receipt[], home: string, indent: string): string[] {
+  const rows = receipts.map((r) => receiptRow(r, home));
+  const widths = LIST_HEADERS.map((h, i) => Math.max(h.length, ...rows.map((row) => (row[i] ?? "").length)));
+  // The last column (LOCATION) is left unpadded — padding it just trails whitespace off the table.
+  const last = LIST_HEADERS.length - 1;
+  const colW = (i: number): number => (i === last ? 0 : (widths[i] ?? 0));
+  const head = indent + LIST_HEADERS.map((h, i) => c.dim(c.bold(h.padEnd(colW(i))))).join("  ");
+  const body = rows.map((row) => indent + row.map((v, i) => paintListCell(v, i, colW(i))).join("  "));
+  return [head, ...body];
+}
+
+/**
+ * Two stacked views, each under a blue "tag" header (white-on-blue): the harnesses active in THIS
+ * directory (global + this project's local installs), then EVERY install on the machine — across all
+ * projects + global. Both render as the same detailed table. `here` is a subset of `all`. Both headers
+ * always show; an empty section gets a "nothing" line instead of a table.
+ */
+export function renderList(here: Receipt[], all: Receipt[], home: string, cwd: string): string {
+  const indent = "    ";
+  const lines: string[] = ["", `  ${tag("THIS DIRECTORY", "blue")}   ${c.dim(homeRelative(cwd, home))}`, ""];
+
+  if (here.length === 0) {
+    lines.push(`${indent}${c.dim("Nothing installed here.")}`);
+  } else {
+    lines.push(...receiptTable(here, home, indent));
+  }
+
+  const noun = all.length === 1 ? "install" : "installs";
+  lines.push("", `  ${tag("EVERYWHERE", "blue")}   ${c.dim(`${all.length} ${noun} on this machine`)}`, "");
+  if (all.length === 0) {
+    lines.push(
+      `${indent}${c.dim("Nothing installed yet.")}`,
+      "",
+      `  ${sym.arrow} ${c.dim("See what's available with")} ${c.cyan("weft catalog")}`,
+    );
+  } else {
+    lines.push(...receiptTable(all, home, indent));
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function renderInfo(entry: IndexEntry, installed: Receipt[], home: string): string {

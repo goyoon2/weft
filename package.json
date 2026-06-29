@@ -13,7 +13,7 @@
     "test:watch": "vitest",
     "weft": "tsx packages/cli/bin/weft.ts",
     "snapshot:refresh": "pnpm --filter @weft/core run snapshot:refresh",
-    "build": "pnpm --filter @symploke-ai/weft run build"
+    "build": "pnpm --filter @weft-ai/weft run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

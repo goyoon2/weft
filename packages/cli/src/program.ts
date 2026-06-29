@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { isCliSupported, supportedClis } from "@weft/adapters";
-import type { CliId, Scope } from "@weft/schema";
+import type { CliId, Receipt, Scope } from "@weft/schema";
 import {
   defaultEnv,
   infoHarness,
@@ -9,13 +9,15 @@ import {
   listCatalog,
   listInstalled,
   maybeAutoUpdate,
+  resolveCtx,
   searchOp,
-  uninstallHarness,
+  uninstallByReceipt,
+  uninstallCandidates,
   updateIndex,
   upgradeAll,
 } from "@weft/core";
-import type { DelegateConsent, DelegateConsentInfo, InstallResult, UninstallResult } from "@weft/core";
-import { promptDelegateConsent, promptInstallTargets, promptUninstallTargets } from "./prompts";
+import type { CellState, DelegateConsent, DelegateConsentInfo, InstallResult, UninstallReceiptResult } from "@weft/core";
+import { promptConfirmUninstall, promptDelegateConsent, promptInstallTargets, promptUninstallTargets } from "./prompts";
 import { renderCatalog, renderInfo, renderList, renderPlan, renderSearch, renderUpdate } from "./render";
 import { banner, c, sym } from "./theme";
 
@@ -97,16 +99,36 @@ function makeDelegateConsent(trust: boolean | undefined): DelegateConsent {
   };
 }
 
-function reportUninstall(harness: string, res: UninstallResult): void {
+function reportUninstall(harness: string, res: UninstallReceiptResult, receipt: Receipt): void {
   if (res.status === "uninstalled") {
-    console.log(`${sym.ok} uninstalled ${c.cyan(harness)} ${c.dim(`(${res.receipt.cli}/${res.receipt.scope})`)}`);
+    console.log(
+      `${sym.ok} uninstalled ${c.cyan(harness)} ${c.dim(`(${receipt.cli}/${receipt.scope}${locationLabel(receipt)})`)}`,
+    );
     if (res.conflicts.length) {
       console.log(`  ${sym.warn} ${c.dim(`left ${res.conflicts.length} modified item(s) in place`)}`);
     }
     for (const w of res.warnings) console.log(`  ${sym.warn} ${c.dim(w)}`);
-  } else if (res.status === "declined") {
+  } else {
     console.log(`${sym.bullet} ${c.cyan(harness)} ${c.dim(`not uninstalled — ${res.reason}`)}`);
   }
+}
+
+/**
+ * Merge per-harness install matrices into one offer for the shared CLI+scope prompt: a `(cli, scope)`
+ * is offered if ANY requested harness can build it; `installed` is true only when EVERY requested
+ * harness already has it there — so the "installed" hint never over-claims for a multi-harness install.
+ */
+function unionCells(matrices: CellState[][]): CellState[] {
+  const agg = new Map<string, { cli: CliId; scope: Scope; installed: number }>();
+  for (const cells of matrices) {
+    for (const cell of cells) {
+      const key = `${cell.cli}/${cell.scope}`;
+      const a = agg.get(key) ?? { cli: cell.cli, scope: cell.scope, installed: 0 };
+      if (cell.installed) a.installed++;
+      agg.set(key, a);
+    }
+  }
+  return [...agg.values()].map((a) => ({ cli: a.cli, scope: a.scope, installed: a.installed === matrices.length }));
 }
 
 export function buildProgram(): Command {
@@ -203,14 +225,18 @@ export function buildProgram(): Command {
 
   program
     .command("list")
-    .description("list installed harnesses")
-    .option("--all", "include installs from other projects")
+    .description("list installed harnesses — this directory, then everywhere on this machine")
+    .option("--all", "in --json output, include installs from other projects")
     .option("--json", "output JSON")
     .action((opts: { all?: boolean; json?: boolean }) => {
       const env = defaultEnv({ weftVersion: VERSION });
-      const receipts = listInstalled(env, { all: opts.all });
-      if (opts.json) console.log(JSON.stringify(receipts, null, 2));
-      else console.log(renderList(receipts, env.home));
+      const here = listInstalled(env); // global + this project's local installs
+      const all = listInstalled(env, { all: true }); // every install across all projects
+      if (opts.json) {
+        console.log(JSON.stringify(opts.all ? all : here, null, 2));
+      } else {
+        console.log(renderList(here, all, env.home, resolveCtx(env).projectRoot));
+      }
     });
 
   program
@@ -225,8 +251,8 @@ export function buildProgram(): Command {
     });
 
   program
-    .command("install [harness]")
-    .description("install a harness (asks which CLI + scope unless given)")
+    .command("install [harnesses...]")
+    .description("install one or more harnesses (asks which CLI + scope, then applies it to all)")
     .option("--cli <id>", "target CLI")
     .option("--scope <scope>", "global or local")
     .option("--version <version>", "specific version (defaults to latest)")
@@ -236,7 +262,7 @@ export function buildProgram(): Command {
     .option("--json", "output JSON")
     .action(
       async (
-        harness: string | undefined,
+        harnesses: string[],
         opts: {
           cli?: string;
           scope?: string;
@@ -248,11 +274,11 @@ export function buildProgram(): Command {
         },
       ) => {
         if (
-          !needArg(harness, {
+          !needArg(harnesses[0], {
             cmd: "install",
-            arg: "harness",
-            what: "a harness id",
-            example: "install gsd-core",
+            arg: "harness...",
+            what: "at least one harness id",
+            example: "install gsd-core anthropic-skills",
             hint: `${c.dim("Find installable harnesses with")} ${c.cyan("weft catalog")}`,
           })
         ) {
@@ -260,14 +286,36 @@ export function buildProgram(): Command {
         }
         const env = defaultEnv({ weftVersion: VERSION });
         await maybeAutoUpdate(env);
-        let targets: { cli: CliId; scope: Scope }[];
 
+        // Resolve each id to its install matrix (what it can build, and where it's already installed).
+        // An unknown id makes installMatrix throw — report it and skip rather than abort the batch.
+        const matrices = new Map<string, CellState[]>();
+        for (const h of harnesses) {
+          if (matrices.has(h)) continue;
+          try {
+            matrices.set(h, installMatrix(env, h));
+          } catch {
+            if (!opts.json) console.log(`${sym.skip} ${c.dim(`no harness "${h}" in the catalog — skipped`)}`);
+          }
+        }
+        const known = [...matrices.keys()];
+        if (known.length === 0) {
+          console.error(
+            `\n  ${sym.err} ${c.bold("Nothing to install.")}\n\n  ${sym.arrow} ${c.dim("Browse the catalog with")} ${c.cyan("weft catalog")}\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        // One CLI+scope decision, applied to every requested harness.
+        let targets: { cli: CliId; scope: Scope }[];
         if (opts.cli && opts.scope) {
           assertCli(opts.cli);
           assertScope(opts.scope);
           targets = [{ cli: opts.cli, scope: opts.scope }];
         } else if (process.stdin.isTTY && !opts.yes) {
-          const chosen = await promptInstallTargets(harness, installMatrix(env, harness));
+          const label = known.length === 1 ? known[0]! : `${known.length} harnesses`;
+          const chosen = await promptInstallTargets(label, unionCells([...matrices.values()]));
           if (chosen === null) {
             console.log(`${sym.bullet} ${c.dim("Cancelled.")}`);
             return;
@@ -285,79 +333,121 @@ export function buildProgram(): Command {
         }
 
         const onDelegate = makeDelegateConsent(opts.trust);
-        const results: { cli: CliId; scope: Scope; result: InstallResult }[] = [];
-        for (const t of targets) {
-          const result = await installHarness(env, {
-            harness,
-            cli: t.cli,
-            scope: t.scope,
-            version: opts.version,
-            dryRun: Boolean(opts.dryRun),
-            onDelegate,
-          });
-          results.push({ ...t, result });
-          if (!opts.json) reportInstall(harness, t, result, env.home);
+        const results: { harness: string; cli: CliId; scope: Scope; result: InstallResult }[] = [];
+        for (const harness of known) {
+          const offered = matrices.get(harness)!;
+          for (const t of targets) {
+            // A harness in a multi-install needn't support every chosen CLI/scope — skip the ones it
+            // can't build (clear note), so the others still go through.
+            if (!offered.some((cell) => cell.cli === t.cli && cell.scope === t.scope)) {
+              if (!opts.json) {
+                console.log(`${sym.skip} ${c.cyan(harness)} ${c.dim(`has no ${t.cli}/${t.scope} build — skipped`)}`);
+              }
+              continue;
+            }
+            try {
+              const result = await installHarness(env, {
+                harness,
+                cli: t.cli,
+                scope: t.scope,
+                version: opts.version,
+                dryRun: Boolean(opts.dryRun),
+                onDelegate,
+              });
+              results.push({ harness, cli: t.cli, scope: t.scope, result });
+              if (!opts.json) reportInstall(harness, t, result, env.home);
+            } catch (err) {
+              // Isolate a single (harness, target) failure (e.g. a version that harness lacks) so the
+              // rest of the batch still installs.
+              if (!opts.json) {
+                console.error(
+                  `${sym.err} ${c.cyan(harness)} ${c.dim(`(${t.cli}/${t.scope}): ${(err as Error).message.replace(/^weft:\s*/, "")}`)}`,
+                );
+              }
+              process.exitCode = 1;
+            }
+          }
         }
         if (opts.json) console.log(JSON.stringify(results, null, 2));
       },
     );
 
   program
-    .command("uninstall [harness]")
-    .description("remove a harness install")
-    .option("--cli <id>", "target CLI")
-    .option("--scope <scope>", "global or local")
+    .command("uninstall [harnesses...]")
+    .description("remove one or more installs — from this directory, another project, or global")
+    .option("--cli <id>", "only this CLI")
+    .option("--scope <scope>", "only global or local")
+    .option("--yes", "skip the confirmation prompt")
     .option("--trust", "allow a delegated (cask) harness to run its own uninstaller without prompting")
-    .action(async (harness: string | undefined, opts: { cli?: string; scope?: string; trust?: boolean }) => {
-      if (
-        !needArg(harness, {
-          cmd: "uninstall",
-          arg: "harness",
-          what: "a harness id",
-          example: "uninstall gsd-core",
-          hint: `${c.dim("See what's installed with")} ${c.cyan("weft list")}`,
-        })
-      ) {
-        return;
-      }
-      if (opts.cli) assertCli(opts.cli);
-      if (opts.scope) assertScope(opts.scope);
-      const env = defaultEnv({ weftVersion: VERSION });
-      const onDelegate = makeDelegateConsent(opts.trust);
-      const res = await uninstallHarness(env, {
-        harness,
-        cli: opts.cli as CliId | undefined,
-        scope: opts.scope as Scope | undefined,
-        onDelegate,
-      });
-      if (res.status === "uninstalled" || res.status === "declined") {
-        reportUninstall(harness, res);
-      } else if (res.status === "not-installed") {
-        console.log(`${sym.bullet} ${c.cyan(harness)} ${c.dim("is not installed here.")}`);
-        for (const r of res.elsewhere) {
-          console.log(`    ${sym.sep} ${c.dim(`also at ${r.cli}/${r.scope}${locationLabel(r)}`)}`);
-        }
-      } else if (process.stdin.isTTY) {
-        // Multiple installs and an interactive terminal: let the user pick which to remove,
-        // mirroring the install prompt. (--cli/--scope still narrows non-interactively.)
-        const chosen = await promptUninstallTargets(harness, res.candidates);
-        if (chosen === null || chosen.length === 0) {
-          console.log(`${sym.bullet} ${c.dim("Cancelled.")}`);
+    .action(
+      async (harnesses: string[], opts: { cli?: string; scope?: string; yes?: boolean; trust?: boolean }) => {
+        if (
+          !needArg(harnesses[0], {
+            cmd: "uninstall",
+            arg: "harness...",
+            what: "at least one harness id",
+            example: "uninstall gsd-core anthropic-skills",
+            hint: `${c.dim("See what's installed with")} ${c.cyan("weft list")}`,
+          })
+        ) {
           return;
         }
-        for (const t of chosen) {
-          reportUninstall(harness, await uninstallHarness(env, { harness, cli: t.cli, scope: t.scope, onDelegate }));
+        if (opts.cli) assertCli(opts.cli);
+        if (opts.scope) assertScope(opts.scope);
+        const env = defaultEnv({ weftVersion: VERSION });
+        const onDelegate = makeDelegateConsent(opts.trust);
+
+        // Each harness is resolved independently — one may live in a single place (confirm), another in
+        // several (pick which directory). One harness's outcome never aborts the rest of the batch.
+        for (const harness of [...new Set(harnesses)]) {
+          // Every install across the machine (all projects + global), narrowed by --cli/--scope — so an
+          // install in another directory, or global, can be removed from wherever weft runs.
+          const candidates = uninstallCandidates(env, {
+            harness,
+            cli: opts.cli as CliId | undefined,
+            scope: opts.scope as Scope | undefined,
+          });
+
+          if (candidates.length === 0) {
+            console.log(`${sym.bullet} ${c.cyan(harness)} ${c.dim("is not installed anywhere.")}`);
+            continue;
+          }
+
+          let chosen: Receipt[];
+          if (candidates.length === 1) {
+            // One place: show exactly where, confirm y/N (skipped by --yes or a non-TTY), then remove.
+            const only = candidates[0]!;
+            if (process.stdin.isTTY && !opts.yes && !(await promptConfirmUninstall(harness, only, env.home))) {
+              console.log(`${sym.bullet} ${c.cyan(harness)} ${c.dim("— cancelled.")}`);
+              continue;
+            }
+            chosen = [only];
+          } else if (process.stdin.isTTY && !opts.yes) {
+            // Several places: let the user pick which director(ies) to remove from.
+            const picked = await promptUninstallTargets(harness, candidates, env.home);
+            if (picked === null || picked.length === 0) {
+              console.log(`${sym.bullet} ${c.cyan(harness)} ${c.dim("— cancelled.")}`);
+              continue;
+            }
+            chosen = picked;
+          } else {
+            // Ambiguous and non-interactive: list the places and ask the user to narrow it.
+            console.log(
+              `${sym.warn} ${c.cyan(harness)} ${c.dim("is installed in multiple places — narrow it with")} ${c.cyan("--cli")}${c.dim("/")}${c.cyan("--scope")}${c.dim(", or run interactively:")}`,
+            );
+            for (const r of candidates) {
+              console.log(`    ${sym.sep} ${c.blue(r.cli)}${c.dim("/")}${r.scope}${c.dim(locationLabel(r))}`);
+            }
+            process.exitCode = 1;
+            continue;
+          }
+
+          for (const r of chosen) {
+            reportUninstall(harness, await uninstallByReceipt(env, r, onDelegate), r);
+          }
         }
-      } else {
-        console.log(
-          `${sym.warn} ${c.cyan(harness)} ${c.dim("is installed in multiple places — narrow it with")} ${c.cyan("--cli")}${c.dim("/")}${c.cyan("--scope")}${c.dim(":")}`,
-        );
-        for (const r of res.candidates) {
-          console.log(`    ${sym.sep} ${c.blue(r.cli)}${c.dim("/")}${r.scope}${c.dim(locationLabel(r))}`);
-        }
-        process.exitCode = 1;
-      }
-    });
+      },
+    );
 
   program
     .command("upgrade [harness]")
