@@ -409,7 +409,35 @@ function fetchGitSource(
     ({ rawTag: checkout, version: resolved } = resolveLatestGitTag(url, pattern.livecheck?.tagPattern));
   }
 
-  execFileSync("git", ["clone", "--depth", "1", "--branch", checkout, url, root], { stdio: "ignore" });
+  try {
+    execFileSync(
+      "git",
+      [
+        // Neutralize Git LFS: treat pointer files as plain content. weft only needs the
+        // source tree (SKILL.md, scripts) — never the multi-MB LFS example artifacts some
+        // repos ship — and smudging them fails on CI runners where git-lfs is installed but
+        // the repo is over its LFS data/bandwidth quota. These overrides make the clone
+        // deterministic and independent of whether git-lfs is installed at all.
+        "-c",
+        "filter.lfs.smudge=",
+        "-c",
+        "filter.lfs.process=",
+        "-c",
+        "filter.lfs.required=false",
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        checkout,
+        url,
+        root,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer | string }).stderr?.toString().trim();
+    throw new Error(`loom: git clone failed for ${url}@${checkout}${stderr ? `\n${stderr}` : ""}`);
+  }
   return { root, version: resolved };
 }
 
