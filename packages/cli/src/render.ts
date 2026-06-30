@@ -250,7 +250,12 @@ export function renderPlan(plan: ExecutionPlan, home: string): string {
   }
   for (const fr of plan.fragments) {
     const op = fr.fragment.op;
-    const label = op.type === "hook" ? `hook ${op.event}${op.matcher ? `[${op.matcher}]` : ""}` : `mcp ${op.name}`;
+    const label =
+      op.type === "hook"
+        ? `hook ${op.event}${op.matcher ? `[${op.matcher}]` : ""}`
+        : op.type === "statusLine"
+          ? "statusLine"
+          : `mcp ${op.name}`;
     lines.push(`  ${merge} ${c.dim("merge  ")} ${label} ${c.dim("→")} ${homeRelative(fr.targetAbs, home)}`);
   }
   if (plan.delegate) {

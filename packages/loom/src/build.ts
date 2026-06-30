@@ -206,9 +206,20 @@ function globFiles(pattern: string, root: string): string[] {
  * index files sitting next to real agent `.md`), which a glob alone can't express.
  */
 function selectFiles(rule: SlotMapRule, root: string): string[] {
+  // Only an inline `status-line` rule omits `from`; every file-placing rule supplies it (enforced in
+  // `validate.ts`). Guard so the optional `from` narrows to a string for the glob below.
+  if (!rule.from) return [];
   const matches = globFiles(rule.from, root);
   if (!rule.exclude?.length) return matches;
   return matches.filter((rel) => !rule.exclude?.some((ex) => matchGlob(ex, rel)));
+}
+
+/** Strip a leading source-path prefix (a payload rule's `rebase`) from `rel`, so a payload tree can
+ *  be rooted at a sub-path of the source. No-op when `rel` doesn't start with the prefix. */
+function rebaseRel(rel: string, rebase?: string): string {
+  if (!rebase) return rel;
+  const prefix = rebase.endsWith("/") ? rebase : `${rebase}/`;
+  return rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
 }
 
 // ───────────────────────────── per-target spool build ─────────────────────────────
@@ -231,6 +242,7 @@ function buildSpoolForTarget(args: {
   const fragments: MergeFragment[] = [];
   const placeholders = new Set<string>();
   let hookCounter = 0;
+  let statusLineCounter = 0;
 
   const write = (archivePath: string, data: Buffer | string): void => {
     const abs = join(stagingDir, archivePath);
@@ -240,6 +252,31 @@ function buildSpoolForTarget(args: {
 
   for (const rule of target.map ?? []) {
     const { tmpl } = asDest(rule.as);
+
+    // status-line is the one slot that carries its value INLINE (no upstream file), so handle it
+    // before the `from` guard below. It folds a single `statusLine` object into the CLI's settings;
+    // its `{{WEFT_PAYLOAD_DIR}}` placeholder (e.g. in a `bash …/statusline.sh` command) resolves at
+    // install, like a hook command.
+    if (rule.kind === "status-line") {
+      if (!rule.statusLine) {
+        notes.push(`${cli}/${scope}: status-line rule "${rule.as}" needs an inline "statusLine" value`);
+        continue;
+      }
+      fragments.push({
+        id: `${pattern.id}#statusline-${String(statusLineCounter++).padStart(4, "0")}`,
+        mergeInto: "statusLine",
+        op: { type: "statusLine", value: rule.statusLine },
+        valueSha: sha256OfValue(rule.statusLine),
+      });
+      for (const p of extractPlaceholders(JSON.stringify(rule.statusLine))) placeholders.add(p);
+      continue;
+    }
+
+    // Every remaining slot kind places/reads files selected by `from`; narrow it for all below.
+    if (!rule.from) {
+      notes.push(`${cli}/${scope}: rule "${rule.as}" (${rule.kind}) missing 'from'`);
+      continue;
+    }
 
     if (rule.kind === "skill") {
       // A skill IS its directory: `from` selects skills by their `SKILL.md`, and we bundle that
@@ -294,10 +331,13 @@ function buildSpoolForTarget(args: {
       const existing = payloadMap.get(id) ?? { id, baseRel: id, archiveDir: `payloads/${id}`, entries: [] };
       const matches = selectFiles(rule, sourceRoot);
       for (const rel of matches) {
+        // Read + transform-match by the SOURCE rel, but STORE under the rebased rel (so a payload can
+        // be rooted at a sub-path of the source, e.g. `src/hooks/x` → `hooks/x`).
         const { data } = loadContent(join(sourceRoot, rel), rel, transforms);
-        const entry: PayloadEntry = { rel, sha: sha256OfBytes(data) };
+        const storedRel = safeName(rebaseRel(rel, rule.rebase), `payload entry (rule "${rule.as}")`);
+        const entry: PayloadEntry = { rel: storedRel, sha: sha256OfBytes(data) };
         existing.entries.push(entry);
-        write(`${existing.archiveDir}/${rel}`, data);
+        write(`${existing.archiveDir}/${storedRel}`, data);
       }
       existing.entries.sort((a, b) => a.rel.localeCompare(b.rel));
       payloadMap.set(id, existing);

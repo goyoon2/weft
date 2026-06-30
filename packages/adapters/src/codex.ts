@@ -81,6 +81,7 @@ export const codexAdapter: CliAdapter = {
   },
 
   configFilePath(mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
+    if (mergeInto === "statusLine") throw new Error("codex: statusLine is unsupported (claude-code only)");
     return mergeInto === "hooks"
       ? join(codexRoot(scope, ctx), "hooks.json")
       : join(codexRoot(scope, ctx), "config.toml");
