@@ -19,13 +19,36 @@ const sourceSpec = z.discriminatedUnion("type", [
   }),
 ]);
 
-const slotMapRule = z.object({
-  kind: slotKind,
-  from: z.string().min(1),
-  as: z.string().min(1),
-  exclude: z.array(z.string().min(1)).optional(),
-  mergeInto: mergeInto.optional(),
-});
+const slotMapRule = z
+  .object({
+    kind: slotKind,
+    from: z.string().min(1).optional(),
+    as: z.string().min(1),
+    exclude: z.array(z.string().min(1)).optional(),
+    mergeInto: mergeInto.optional(),
+    // Open-shaped: an MCP server value varies by client (stdio command/args/env, opencode launch
+    // array, or a remote url). Validated structurally, not by content, so any client shape passes.
+    server: z.record(z.string(), z.unknown()).optional(),
+  })
+  // `from` is required for every slot kind except an inline `mcp-server` (which carries `server`).
+  .refine((r) => r.kind === "mcp-server" || !!r.from, {
+    message: "slot rule requires 'from' (a source glob)",
+    path: ["from"],
+  })
+  // An mcp-server rule registers EITHER an inline `server` OR a `from` JSON file — exactly one.
+  .refine((r) => r.kind !== "mcp-server" || !!r.from !== !!r.server, {
+    message: "mcp-server rule needs exactly one of 'server' (inline) or 'from' (a source .mcp.json)",
+    path: ["server"],
+  })
+  // An inline mcp-server takes its registered name from `as` ("mcpServer:<name>"); it must be present.
+  .refine(
+    (r) => {
+      if (r.kind !== "mcp-server" || !r.server) return true;
+      const i = r.as.indexOf(":");
+      return i >= 0 && r.as.slice(i + 1).length > 0;
+    },
+    { message: 'inline mcp-server rule needs as: "mcpServer:<name>" (a non-empty server name)', path: ["as"] },
+  );
 
 const transformRule = z.object({
   type: z.literal("substitute-var"),

@@ -206,9 +206,34 @@ function globFiles(pattern: string, root: string): string[] {
  * index files sitting next to real agent `.md`), which a glob alone can't express.
  */
 function selectFiles(rule: SlotMapRule, root: string): string[] {
+  // Only an inline `mcp-server` rule omits `from`; every file-placing rule supplies it (enforced in
+  // `validate.ts`). Guard so the optional `from` narrows to a string for the glob below.
+  if (!rule.from) return [];
   const matches = globFiles(rule.from, root);
   if (!rule.exclude?.length) return matches;
   return matches.filter((rel) => !rule.exclude?.some((ex) => matchGlob(ex, rel)));
+}
+
+/**
+ * Pull the server map out of an upstream MCP config file. Upstreams ship the map under various keys
+ * (`mcpServers` for Claude/Gemini/Cursor, `mcp` for OpenCode, `mcp_servers` for Codex) or, rarely, as
+ * a bare top-level map of name → server. Returns the inner `name → value` object, or undefined.
+ */
+function extractServerMap(parsed: unknown): Record<string, unknown> | undefined {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  for (const key of ["mcpServers", "mcp", "mcp_servers"]) {
+    const inner = obj[key];
+    if (inner !== null && typeof inner === "object" && !Array.isArray(inner)) {
+      return inner as Record<string, unknown>;
+    }
+  }
+  // A bare map: every value is an object (a server def). Avoids mistaking a wrapper for the map.
+  const values = Object.values(obj);
+  if (values.length > 0 && values.every((v) => v !== null && typeof v === "object" && !Array.isArray(v))) {
+    return obj;
+  }
+  return undefined;
 }
 
 // ───────────────────────────── per-target spool build ─────────────────────────────
@@ -231,6 +256,7 @@ function buildSpoolForTarget(args: {
   const fragments: MergeFragment[] = [];
   const placeholders = new Set<string>();
   let hookCounter = 0;
+  let mcpCounter = 0;
 
   const write = (archivePath: string, data: Buffer | string): void => {
     const abs = join(stagingDir, archivePath);
@@ -240,6 +266,64 @@ function buildSpoolForTarget(args: {
 
   for (const rule of target.map ?? []) {
     const { tmpl } = asDest(rule.as);
+
+    // mcp-server is the one slot that can carry its registration INLINE (no upstream file), so handle
+    // it before the `from` guard below. The MCP runtime model (fragment → mcpServers merge → per-CLI
+    // config placement → uninstall reversal) already exists end-to-end; this only emits the fragment.
+    if (rule.kind === "mcp-server") {
+      // (a) Inline registration declared in the pattern — the common case for an upstream launched by
+      // a published command (`npx`/`uvx`/binary). The name comes from `as` ("mcpServer:<name>"); the
+      // value (`server`) is folded verbatim under mcpServers, exactly like a captured server fragment.
+      if (rule.server !== undefined) {
+        const name = safeName(tmpl, `mcp-server name (rule "${rule.as}")`);
+        fragments.push({
+          id: `${pattern.id}#mcp-${String(mcpCounter++).padStart(4, "0")}`,
+          mergeInto: "mcpServers",
+          op: { type: "mcpServer", name, value: rule.server },
+          valueSha: sha256OfValue(rule.server),
+        });
+        continue;
+      }
+      // (b) File-based: an upstream that ships a static `.mcp.json` — read its server map and decompose
+      // each entry into an individually-mergeable fragment (the same shape the captured path emits).
+      if (rule.from) {
+        const abs = join(sourceRoot, rule.from);
+        let raw: string;
+        try {
+          raw = readFileSync(abs, "utf8");
+        } catch {
+          notes.push(`${cli}/${scope}: mcp-server source "${rule.from}" not found`);
+          continue;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(applyTransforms(raw, transforms, rule.from));
+        } catch {
+          notes.push(`${cli}/${scope}: mcp-server source "${rule.from}" is not valid JSON`);
+          continue;
+        }
+        const servers = extractServerMap(parsed);
+        if (!servers || Object.keys(servers).length === 0) {
+          notes.push(`${cli}/${scope}: mcp-server source "${rule.from}" has no server map`);
+          continue;
+        }
+        for (const [name, value] of Object.entries(servers)) {
+          fragments.push({
+            id: `${pattern.id}#mcp-${String(mcpCounter++).padStart(4, "0")}`,
+            mergeInto: "mcpServers",
+            op: { type: "mcpServer", name, value },
+            valueSha: sha256OfValue(value),
+          });
+        }
+      }
+      continue;
+    }
+
+    // Every remaining slot kind places files selected by `from`; narrow it to a string for all below.
+    if (!rule.from) {
+      notes.push(`${cli}/${scope}: rule "${rule.as}" (${rule.kind}) missing 'from'`);
+      continue;
+    }
 
     if (rule.kind === "skill") {
       // A skill IS its directory: `from` selects skills by their `SKILL.md`, and we bundle that

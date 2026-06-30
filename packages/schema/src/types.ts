@@ -36,11 +36,17 @@ export type SourceSpec =
 /** One declarative mapping from a source glob to a logical slot. */
 export interface SlotMapRule {
   kind: SlotKind;
-  /** Glob relative to the fetched source root, e.g. `"agents/*.md"`. */
-  from: string;
+  /**
+   * Glob relative to the fetched source root, e.g. `"agents/*.md"`. Required for every slot kind
+   * EXCEPT an inline `mcp-server` rule that carries its registration in {@link SlotMapRule.server}
+   * (a `from` file is then unnecessary — there is no upstream file to read).
+   */
+  from?: string;
   /**
    * Logical destination template. `${name}` is captured from the file/dir name.
    * Examples: `"agent:${name}"`, `"command:gsd-${name}"`, `"payload:gsd-core"`, `"hook"`.
+   * For an inline `mcp-server` rule the part after the colon IS the server name the entry registers
+   * under, e.g. `"mcpServer:chrome-devtools"`.
    */
   as: string;
   /**
@@ -52,6 +58,16 @@ export interface SlotMapRule {
   exclude?: string[];
   /** For shared-file slots only. */
   mergeInto?: MergeInto;
+  /**
+   * Inline MCP server registration for an `mcp-server` rule with no upstream config file: the
+   * server's *value*, folded verbatim under the CLI's MCP map (its name comes from `as`). Open-shaped
+   * because client configs differ — stdio `{ command, args, env }` (Claude/Codex/Gemini/Cursor),
+   * a launch array `{ type, command: [...], enabled }` (OpenCode), or remote `{ url, type, headers }`.
+   * Each CLI target declares the value in that CLI's own shape; the adapter writes it as JSON or TOML.
+   * Use for upstreams launched by a published command (`npx`/`uvx`/a binary) rather than shipping a
+   * ready `.mcp.json`. Mutually exclusive with `from`.
+   */
+  server?: Record<string, unknown>;
 }
 
 /** A content transform applied to assembled spool files at build time. */
