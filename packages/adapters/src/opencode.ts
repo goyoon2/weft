@@ -48,6 +48,7 @@ export const opencodeAdapter: CliAdapter = {
 
   configFilePath(mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
     if (mergeInto === "hooks") throw new Error("opencode: hooks are JS plugins, not a mergeable config");
+    if (mergeInto === "statusLine") throw new Error("opencode: statusLine is unsupported (claude-code only)");
     return opencodeConfig(scope, ctx);
   },
 
