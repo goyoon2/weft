@@ -4,8 +4,8 @@ import type { HarnessPattern, Index, Receipt, Spool } from "./types";
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/, "expected sha256:<64 hex>");
 const cliId = z.enum(["claude-code", "codex", "gemini", "cursor", "opencode"]);
 const scope = z.enum(["global", "local"]);
-const slotKind = z.enum(["skill", "agent", "command", "hook", "mcp-server", "payload"]);
-const mergeInto = z.enum(["hooks", "mcpServers"]);
+const slotKind = z.enum(["skill", "agent", "command", "hook", "mcp-server", "status-line", "payload"]);
+const mergeInto = z.enum(["hooks", "mcpServers", "statusLine"]);
 const shadowRecord = z.object({ backupPath: z.string(), originalSha: sha256 });
 
 // ── pattern ──
@@ -19,13 +19,45 @@ const sourceSpec = z.discriminatedUnion("type", [
   }),
 ]);
 
-const slotMapRule = z.object({
-  kind: slotKind,
-  from: z.string().min(1),
-  as: z.string().min(1),
-  exclude: z.array(z.string().min(1)).optional(),
-  mergeInto: mergeInto.optional(),
-});
+const slotMapRule = z
+  .object({
+    kind: slotKind,
+    from: z.string().min(1).optional(),
+    as: z.string().min(1),
+    exclude: z.array(z.string().min(1)).optional(),
+    mergeInto: mergeInto.optional(),
+    // Open-shaped: an MCP server value varies by client (stdio command/args/env, opencode launch
+    // array, or a remote url). Validated structurally, not by content, so any client shape passes.
+    server: z.record(z.string(), z.unknown()).optional(),
+    // Inline value for a `status-line` rule (the statusLine object). Open-shaped.
+    statusLine: z.record(z.string(), z.unknown()).optional(),
+    // payload only: leading source-path prefix to strip from each entry's stored rel.
+    rebase: z.string().min(1).optional(),
+  })
+  // `from` is required for every slot kind except the inline `mcp-server` / `status-line` slots.
+  .refine((r) => r.kind === "mcp-server" || r.kind === "status-line" || !!r.from, {
+    message: "slot rule requires 'from' (a source glob)",
+    path: ["from"],
+  })
+  // An mcp-server rule registers EITHER an inline `server` OR a `from` JSON file — exactly one.
+  .refine((r) => r.kind !== "mcp-server" || !!r.from !== !!r.server, {
+    message: "mcp-server rule needs exactly one of 'server' (inline) or 'from' (a source .mcp.json)",
+    path: ["server"],
+  })
+  // An inline mcp-server takes its registered name from `as` ("mcpServer:<name>"); it must be present.
+  .refine(
+    (r) => {
+      if (r.kind !== "mcp-server" || !r.server) return true;
+      const i = r.as.indexOf(":");
+      return i >= 0 && r.as.slice(i + 1).length > 0;
+    },
+    { message: 'inline mcp-server rule needs as: "mcpServer:<name>" (a non-empty server name)', path: ["as"] },
+  )
+  // A status-line rule carries its value inline; `from` is not used for it.
+  .refine((r) => r.kind !== "status-line" || !!r.statusLine, {
+    message: "status-line rule requires an inline 'statusLine' value",
+    path: ["statusLine"],
+  });
 
 const transformRule = z.object({
   type: z.literal("substitute-var"),
@@ -156,6 +188,7 @@ const mergeOp = z.discriminatedUnion("type", [
     matcher: z.string().optional(),
     command: z.unknown(),
   }),
+  z.object({ type: z.literal("statusLine"), value: z.unknown() }),
 ]);
 
 const spoolSchema = z.object({
@@ -211,6 +244,7 @@ const spoolSchema = z.object({
 const fragmentLocator = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("mcpServer"), name: z.string() }),
   z.object({ kind: z.literal("hook"), event: z.string(), matcher: z.string().optional() }),
+  z.object({ kind: z.literal("statusLine") }),
 ]);
 
 const receiptSchema = z.object({

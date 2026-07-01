@@ -6,10 +6,13 @@ import {
   artifactIdentity,
   decomposeGroupedHooks,
   decomposeMcpUnder,
+  decomposeStatusLine,
   mergeGroupedHook,
   mergeMcpUnder,
+  mergeStatusLine,
   unmergeGroupedHook,
   unmergeMcpUnder,
+  unmergeStatusLine,
 } from "./shared";
 import type {
   CliAdapter,
@@ -43,7 +46,8 @@ export const claudeCodeAdapter: CliAdapter = {
   },
 
   configFilePath(mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
-    if (mergeInto === "hooks") return join(claudeRoot(scope, ctx), "settings.json");
+    // hooks AND statusLine both live in settings.json.
+    if (mergeInto === "hooks" || mergeInto === "statusLine") return join(claudeRoot(scope, ctx), "settings.json");
     // mcpServers: global → ~/.claude.json (top-level); local → <projectRoot>/.mcp.json
     return scope === "global" ? join(ctx.home, ".claude.json") : join(ctx.projectRoot, ".mcp.json");
   },
@@ -60,15 +64,19 @@ export const claudeCodeAdapter: CliAdapter = {
   },
 
   mergeFragment(cfg: ParsedConfig, frag: MergeFragment): MergeResult {
-    return frag.op.type === "mcpServer" ? mergeMcpUnder(cfg, frag, "mcpServers") : mergeGroupedHook(cfg, frag);
+    if (frag.op.type === "mcpServer") return mergeMcpUnder(cfg, frag, "mcpServers");
+    if (frag.op.type === "statusLine") return mergeStatusLine(cfg, frag, "statusLine");
+    return mergeGroupedHook(cfg, frag);
   },
   unmergeFragment(cfg: ParsedConfig, applied: AppliedFragment): UnmergeResult {
-    return applied.locator.kind === "mcpServer"
-      ? unmergeMcpUnder(cfg, applied, "mcpServers")
-      : unmergeGroupedHook(cfg, applied);
+    if (applied.locator.kind === "mcpServer") return unmergeMcpUnder(cfg, applied, "mcpServers");
+    if (applied.locator.kind === "statusLine") return unmergeStatusLine(cfg, applied, "statusLine");
+    return unmergeGroupedHook(cfg, applied);
   },
   decomposeConfig(data: Record<string, unknown>, mergeInto: MergeInto): DecomposedConfig {
-    return mergeInto === "hooks" ? decomposeGroupedHooks(data) : decomposeMcpUnder(data, "mcpServers");
+    if (mergeInto === "hooks") return decomposeGroupedHooks(data);
+    if (mergeInto === "statusLine") return decomposeStatusLine(data, "statusLine");
+    return decomposeMcpUnder(data, "mcpServers");
   },
 
   artifactIdentity(art: FileArtifact): string {

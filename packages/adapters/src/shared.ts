@@ -82,6 +82,46 @@ export function decomposeMcpUnder(data: Record<string, unknown>, mapKey: string)
   return { ops, consumedKeys: ops.length ? [mapKey] : [] };
 }
 
+// ───────────────────────────── statusLine (single-value key) ─────────────────────────────
+// Unlike hooks/mcpServers (collections weft adds INTO), `statusLine` is a SINGLE object value. weft
+// sets it only when the user has none, never overwrites a user's own, and on uninstall removes only
+// its own (verify-by-hash). The same shape fits any scalar settings key (e.g. a future contextFile).
+
+export function mergeStatusLine(cfg: ParsedConfig, frag: MergeFragment, key: string): MergeResult {
+  if (frag.op.type !== "statusLine") throw new Error("mergeStatusLine: not a statusLine fragment");
+  const warnings: string[] = [];
+  const existing = cfg.data[key];
+  if (existing !== undefined) {
+    if (sha256OfValue(existing) === frag.valueSha) {
+      return { applied: true, locator: { kind: "statusLine" }, warnings };
+    }
+    warnings.push(`${key} already set to a different value; not overwritten`);
+    return { applied: false, locator: { kind: "statusLine" }, warnings };
+  }
+  cfg.data[key] = frag.op.value;
+  return { applied: true, locator: { kind: "statusLine" }, warnings };
+}
+
+export function unmergeStatusLine(cfg: ParsedConfig, applied: AppliedFragment, key: string): UnmergeResult {
+  const warnings: string[] = [];
+  if (applied.locator.kind !== "statusLine") return { removed: false, conflict: false, warnings };
+  const existing = cfg.data[key];
+  if (existing === undefined) return { removed: false, conflict: false, warnings };
+  if (sha256OfValue(existing) !== applied.valueSha) {
+    warnings.push(`${key} was modified after install; left in place`);
+    return { removed: false, conflict: true, warnings };
+  }
+  delete cfg.data[key];
+  return { removed: true, conflict: false, warnings };
+}
+
+/** Build-time inverse: pull a single-value `key` (e.g. `statusLine`) out as one `statusLine` op. */
+export function decomposeStatusLine(data: Record<string, unknown>, key: string): DecomposedConfig {
+  const value = data[key];
+  if (value === undefined) return { ops: [], consumedKeys: [] };
+  return { ops: [{ type: "statusLine", value }], consumedKeys: [key] };
+}
+
 // ───────────────────────────── Grouped hooks ─────────────────────────────
 // The Claude/Codex/Gemini shape: hooks.<Event> = [ { matcher?, hooks: [ <command> ] } ].
 // Provenance is per-command (a group's matcher is not unique), so we remove by value hash.

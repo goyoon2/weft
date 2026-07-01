@@ -47,7 +47,8 @@ export const geminiAdapter: CliAdapter = {
     }
   },
 
-  configFilePath(_mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
+  configFilePath(mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
+    if (mergeInto === "statusLine") throw new Error("gemini: statusLine is unsupported (claude-code only)");
     // Both hooks and mcpServers live in settings.json.
     return join(geminiRoot(scope, ctx), "settings.json");
   },

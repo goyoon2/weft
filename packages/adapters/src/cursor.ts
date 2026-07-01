@@ -41,6 +41,7 @@ export const cursorAdapter: CliAdapter = {
 
   configFilePath(mergeInto: MergeInto, scope: Scope, ctx: ResolveCtx): string {
     if (mergeInto === "hooks") throw new Error("cursor: hooks (flat shape) not implemented in this build");
+    if (mergeInto === "statusLine") throw new Error("cursor: statusLine is unsupported (claude-code only)");
     return join(cursorRoot(scope, ctx), "mcp.json");
   },
 

@@ -99,7 +99,7 @@ function placePayloadFile(
 }
 
 function substituteFragment(frag: MergeFragment, vars: Record<string, string>): MergeFragment {
-  if (frag.op.type === "mcpServer") {
+  if (frag.op.type === "mcpServer" || frag.op.type === "statusLine") {
     const value = substituteDeep(frag.op.value, vars);
     return { ...frag, op: { ...frag.op, value }, valueSha: sha256OfValue(value) };
   }

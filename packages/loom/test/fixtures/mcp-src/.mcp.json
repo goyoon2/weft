@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "stitch": { "command": "npx", "args": ["-y", "@google-labs/stitch-mcp@latest"] },
+    "weather": { "command": "uvx", "args": ["weather-mcp"] }
+  }
+}

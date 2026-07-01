@@ -18,13 +18,17 @@ export type Scope = "global" | "local";
 /**
  * The CLI-agnostic vocabulary the loom emits and adapters consume.
  * - `skill`/`agent`/`command` — independent files placed in a slot directory.
- * - `hook`/`mcp-server` — merge fragments folded into a shared config file.
+ * - `hook`/`mcp-server`/`status-line` — merge fragments folded into a shared config file.
  * - `payload` — an opaque directory tree placed at a CLI base dir (e.g. an out-of-tree runtime).
  */
-export type SlotKind = "skill" | "agent" | "command" | "hook" | "mcp-server" | "payload";
+export type SlotKind = "skill" | "agent" | "command" | "hook" | "mcp-server" | "status-line" | "payload";
 
-/** Which shared config map a fragment merges into. */
-export type MergeInto = "hooks" | "mcpServers";
+/**
+ * Which shared config key a fragment merges into. `hooks`/`mcpServers` are COLLECTIONS (weft adds
+ * alongside a user's entries); `statusLine` is a SINGLE-VALUE key (one object) — weft sets it only
+ * when absent and never overwrites a user's own.
+ */
+export type MergeInto = "hooks" | "mcpServers" | "statusLine";
 
 // ───────────────────────────── pattern (mill source) ─────────────────────────────
 
@@ -36,11 +40,17 @@ export type SourceSpec =
 /** One declarative mapping from a source glob to a logical slot. */
 export interface SlotMapRule {
   kind: SlotKind;
-  /** Glob relative to the fetched source root, e.g. `"agents/*.md"`. */
-  from: string;
+  /**
+   * Glob relative to the fetched source root, e.g. `"agents/*.md"`. Required for every slot kind
+   * EXCEPT an inline `mcp-server` rule that carries its registration in {@link SlotMapRule.server}
+   * (a `from` file is then unnecessary — there is no upstream file to read).
+   */
+  from?: string;
   /**
    * Logical destination template. `${name}` is captured from the file/dir name.
    * Examples: `"agent:${name}"`, `"command:gsd-${name}"`, `"payload:gsd-core"`, `"hook"`.
+   * For an inline `mcp-server` rule the part after the colon IS the server name the entry registers
+   * under, e.g. `"mcpServer:chrome-devtools"`.
    */
   as: string;
   /**
@@ -52,6 +62,30 @@ export interface SlotMapRule {
   exclude?: string[];
   /** For shared-file slots only. */
   mergeInto?: MergeInto;
+  /**
+   * Inline MCP server registration for an `mcp-server` rule with no upstream config file: the
+   * server's *value*, folded verbatim under the CLI's MCP map (its name comes from `as`). Open-shaped
+   * because client configs differ — stdio `{ command, args, env }` (Claude/Codex/Gemini/Cursor),
+   * a launch array `{ type, command: [...], enabled }` (OpenCode), or remote `{ url, type, headers }`.
+   * Each CLI target declares the value in that CLI's own shape; the adapter writes it as JSON or TOML.
+   * Use for upstreams launched by a published command (`npx`/`uvx`/a binary) rather than shipping a
+   * ready `.mcp.json`. Mutually exclusive with `from`.
+   */
+  server?: Record<string, unknown>;
+  /**
+   * For a `payload` rule: a leading source-path prefix to STRIP from each matched file's relative
+   * path before storing it in the payload tree. Lets a payload be rooted at a sub-path of the source
+   * — e.g. `from: "src/hooks/**"` + `rebase: "src"` stores `src/hooks/x.js` as `hooks/x.js`, so a
+   * runtime that resolves siblings via `__dirname/../skills/...` finds them at the expected layout.
+   */
+  rebase?: string;
+  /**
+   * Inline value for a `status-line` rule (no source file): the `statusLine` object folded into the
+   * CLI's settings, e.g. `{ type: "command", command: "bash {{WEFT_PAYLOAD_DIR}}/x/statusline.sh" }`.
+   * A `{{WEFT_PAYLOAD_DIR}}` placeholder resolves at install. claude-code only (the one CLI with a
+   * `statusLine` setting). Mutually exclusive with `from`.
+   */
+  statusLine?: Record<string, unknown>;
 }
 
 /** A content transform applied to assembled spool files at build time. */
@@ -267,7 +301,8 @@ export interface PayloadArtifact {
 
 export type MergeOp =
   | { type: "mcpServer"; name: string; value: unknown }
-  | { type: "hook"; event: string; matcher?: string; command: unknown };
+  | { type: "hook"; event: string; matcher?: string; command: unknown }
+  | { type: "statusLine"; value: unknown };
 
 export interface MergeFragment {
   /** Stable provenance id, e.g. `"gsd-core#hook-0007"`. */
@@ -348,7 +383,8 @@ export interface PlacedPayload {
 
 export type FragmentLocator =
   | { kind: "mcpServer"; name: string }
-  | { kind: "hook"; event: string; matcher?: string };
+  | { kind: "hook"; event: string; matcher?: string }
+  | { kind: "statusLine" };
 
 export interface AppliedFragment {
   id: string;
